@@ -1,0 +1,13 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Add conventional application models here in later phases. Prisma owns relational
+// business data only (for example customers, orders, tickets, and audit records).
+// Vector indexes, retrieval chunks, checkpoints, and agent runtime state are owned
+// by agent-core migrations and must not be declared in this schema.

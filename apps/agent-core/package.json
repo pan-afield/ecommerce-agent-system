@@ -1,0 +1,12 @@
+{
+  "name": "@ecommerce-agent-system/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "\"${PYTHON_BIN:-python3.12}\" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000",
+    "test": "\"${PYTHON_BIN:-python3.12}\" -m pytest",
+    "lint": "\"${PYTHON_BIN:-python3.12}\" -m ruff check app tests",
+    "typecheck": "\"${PYTHON_BIN:-python3.12}\" -m mypy app tests",
+    "check-types": "\"${PYTHON_BIN:-python3.12}\" -m mypy app tests"
+  }
+}

@@ -1,0 +1,43 @@
+:root {
+  color-scheme: light;
+  --surface-canvas: #f3f5f4;
+  --surface-default: #ffffff;
+  --surface-raised: #fbfcfb;
+  --ink-default: #17211d;
+  --ink-strong: #0b120f;
+  --ink-muted: #5f6d66;
+  --line-default: #dfe5e1;
+  --line-strong: #c8d1cc;
+  --accent-default: #d6542c;
+  --accent-soft: #fbe9e2;
+  --positive-default: #20815b;
+  --positive-soft: #e3f4ec;
+  --elevation-shell: 0 18px 48px rgba(23, 33, 29, 0.08);
+}
+
+@theme inline {
+  --color-canvas: var(--surface-canvas);
+  --color-surface: var(--surface-default);
+  --color-surface-raised: var(--surface-raised);
+  --color-ink: var(--ink-default);
+  --color-ink-strong: var(--ink-strong);
+  --color-ink-muted: var(--ink-muted);
+  --color-line: var(--line-default);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent-default);
+  --color-accent-soft: var(--accent-soft);
+  --color-positive: var(--positive-default);
+  --color-positive-soft: var(--positive-soft);
+  --shadow-shell: var(--elevation-shell);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

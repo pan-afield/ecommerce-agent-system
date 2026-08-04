@@ -1,0 +1,7 @@
+{
+  "extends": "./typescript/base.json",
+  "compilerOptions": {
+    "types": ["@testing-library/jest-dom/vitest", "vitest/globals"]
+  },
+  "include": ["testing/**/*.ts"]
+}

@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@import "@ecommerce-agent-system/ui/styles.css";
+@source "../../../packages/ui/src";
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--surface-canvas);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  background:
+    linear-gradient(var(--line-default) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-default) 1px, transparent 1px),
+    var(--surface-canvas);
+  background-size: 32px 32px;
+  color: var(--ink-default);
+  font-family: "Manrope Variable", sans-serif;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink-strong);
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@ecommerce-agent-system/database",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "generate": "prisma generate",
+    "lint": "prisma format --check",
+    "typecheck": "prisma validate",
+    "check-types": "prisma validate",
+    "db:format": "prisma format",
+    "db:migrate": "prisma migrate dev"
+  },
+  "dependencies": {
+    "@prisma/client": "6.13.0"
+  },
+  "devDependencies": {
+    "prisma": "6.13.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "ecommerce-agent-system",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:backend": "pnpm --filter @ecommerce-agent-system/agent-core test",
+    "test:ui": "pnpm --filter @ecommerce-agent-system/ui test",
+    "test:web": "pnpm --filter @ecommerce-agent-system/web test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "eslint": "10.8.0",
+    "turbo": "2.10.8",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

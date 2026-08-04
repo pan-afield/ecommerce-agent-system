@@ -1,0 +1,9 @@
+{
+  "extends": "@ecommerce-agent-system/config/typescript/react-library.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "types": ["@testing-library/jest-dom/vitest", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist"]
+}
