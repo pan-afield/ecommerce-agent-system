@@ -2,15 +2,17 @@
 
 Python 3.12 service boundary for the ecommerce customer-service system.
 
-## Phase 1 scope
+## V0.1 scope
 
 - FastAPI application factory and lifespan management
 - Environment-backed settings
 - Async SQLAlchemy engine ownership
 - Liveness and database-backed readiness endpoints
+- Async `POST /v1/chat` backed by `langchain-openai`
+- Stable provider error responses and dependency-injected test doubles
 
-The `agents`, `tools`, and `rag` packages are ownership placeholders only. They intentionally
-contain no orchestration, retrieval, refund, or model-provider behavior in this phase.
+The `agents`, `tools`, and `rag` packages are ownership placeholders only. V0.1 intentionally
+contains no LangGraph orchestration, tools, retrieval, order access, or refund behavior.
 
 ## Local checks
 
@@ -30,3 +32,11 @@ is provided for workspace integration but must only be run intentionally.
 - `GET /health/live` returns `200` when the HTTP process is responsive.
 - `GET /health/ready` runs `SELECT 1` through the async SQLAlchemy engine. It returns `200` when
   PostgreSQL is reachable and `503` otherwise.
+
+## Chat contract
+
+- `POST /v1/chat` accepts `{"message": "..."}` and returns assistant content plus the configured
+  model name.
+- The message is trimmed, must not be empty, and is limited to 2,000 characters.
+- Automated tests replace the model/service boundary and never require a real API key.
+- See `docs/learning/v0.1-backend.md` for the request flow and learning notes.
