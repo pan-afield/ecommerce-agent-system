@@ -42,6 +42,14 @@
 - If the user explicitly asks to leave teaching mode for a specific backend task, follow that instruction only for the stated task; otherwise teaching mode remains the default.
 - At the end of a backend milestone, summarize what the user implemented, the Python and AI concepts learned, automated verification results, manual checks still needed, and residual risks.
 
+## Backend Concurrency Teaching
+
+- Apply this rule only when writing, reviewing, or planning backend code. Do not apply it to frontend implementation or pause frontend work for concurrency teaching.
+- Proactively flag concurrency whenever backend work involves shared mutable state, application singletons, request-scoped resources, `async` tasks, database sessions or transactions, read-then-write logic, inventory or money movement, retries, webhooks, idempotency, event ordering, connection pools, or rate-limited external services.
+- Before the relevant backend coding step, explain the risk in concise Chinese with a concrete two-request timeline. Distinguish application/process scope, request scope, client/session scope, and durable shared state so the user can see exactly which data may be shared.
+- State the invariant that must remain true, the chosen protection mechanism, and why it is proportionate. Typical mechanisms include stateless services, request-local sessions, atomic SQL conditions, transactions, row or optimistic locks, unique constraints, idempotency keys, explicit ordering, and bounded concurrency. Do not introduce concurrency machinery when the current operation is naturally isolated or read-only; explain briefly why it is safe instead.
+- Add or update risk-focused tests when concurrency affects correctness. Depending on the feature, cover overlapping requests, duplicate delivery, transaction rollback, ordering, idempotency, or resource cleanup, while keeping external services mocked and database tests isolated.
+
 ## Type Check Scope
 
 - Type-check files changed by the current task unless the user explicitly requests a full-project check or shared types/configuration require broader validation.

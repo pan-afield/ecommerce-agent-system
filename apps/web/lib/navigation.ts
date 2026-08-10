@@ -3,7 +3,7 @@ import { Boxes, Gauge, Settings2 } from "lucide-react";
 import type { NavigationItem } from "@/types/navigation";
 
 export const navigationItems: NavigationItem[] = [
-  { label: "Workspace", icon: Gauge, active: true },
-  { label: "Capabilities", icon: Boxes },
-  { label: "Settings", icon: Settings2 },
+  { label: "客服工作台", icon: Gauge, active: true },
+  { label: "能力配置", icon: Boxes },
+  { label: "设置", icon: Settings2 },
 ];

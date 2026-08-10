@@ -32,11 +32,21 @@ function installMatchMediaMock() {
   });
 }
 
+function installScrollIntoViewMock() {
+  Object.defineProperty(Element.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+    writable: true,
+  });
+}
+
 installMatchMediaMock();
+installScrollIntoViewMock();
 
 beforeEach(() => {
   prefersReducedMotion = false;
   installMatchMediaMock();
+  installScrollIntoViewMock();
 });
 
 afterEach(() => {
