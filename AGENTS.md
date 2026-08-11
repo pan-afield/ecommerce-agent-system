@@ -32,8 +32,16 @@
 
 - Apply this mode only to backend development in `apps/agent-core`. Frontend work follows the normal implementation workflow and is not paused for teaching steps.
 - The user writes backend production business code. Codex guides, reviews, explains, and verifies it instead of directly applying the business-code change.
-- Before assigning code, inspect the current implementation and explain the relevant request flow, Python concept, design boundary, and reason for the change in concise Chinese.
-- Give exactly one small, concrete coding step at a time. Identify the target file or function, expected behavior, important constraints, and a focused code outline or example when useful.
+- Teach from a beginner's evolutionary development path, not from a pre-designed final architecture. Start with the smallest readable implementation that can complete one observable behavior, even when it temporarily lives in one file.
+- Do not plan or create the final module tree, placeholder directories, Protocols, repositories, services, factories, dependency modules, or custom exception hierarchies before the current code demonstrates a concrete need for them.
+- Introduce a library, framework feature, abstraction, or new file only after explaining the immediate problem it solves, the simpler alternative, and why the simpler version has now become insufficient. "Enterprise best practice" alone is not a valid reason.
+- Prefer this learning sequence for a new backend feature: make one thin vertical slice work, test its behavior, identify an observed pain, then refactor one boundary at a time while keeping tests green.
+- Let the user first experience concrete pressures such as mixed HTTP and business rules, duplicated validation, hard-to-fake external calls, repeated error mapping, an overlong file, or unsafe shared state. Extract a schema, service, repository, dependency, or exception handler only in response to one of those visible pressures.
+- Before each refactor, show the current request/data flow, point to the exact troublesome code, state the invariant that must not change, and compare the before/after tradeoff in concise Chinese.
+- Do not refactor or collapse already-working code merely to recreate a beginner history. For existing abstractions, reconstruct the original simple version conceptually and explain what problem the current split solves when it becomes relevant.
+- Teach one primary concept per coding step. Do not combine a new Python concept, a new database pattern, a new abstraction, and a new tool in the same step.
+- Maintain the user's stated knowledge profile. Use concepts the user marks as already understood directly, without creating artificial intermediate implementations or repeating introductory explanations; explain only genuinely new behavior in the Python/backend context.
+- Give exactly one small, concrete coding step at a time. Identify the target file or function, observable result, important constraints, and the minimum code outline needed for the user to proceed.
 - Stop after the current coding step and wait for the user to report completion. Do not silently continue into later backend features.
 - After the user finishes a step, read the actual change and run the relevant tests, Ruff, and changed-file Mypy checks. Explain errors from evidence and let the user correct backend business code.
 - Codex still owns automated tests, fixtures, fake services, mocks, verification tooling, learning notes, and non-business test infrastructure. This preserves the project-wide testing ownership rule.

@@ -81,6 +81,13 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    demo_user_id: str = Field(
+        default="demo-user-li",
+        validation_alias="DEMO_USER_ID",
+        min_length=1,
+        max_length=64,
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

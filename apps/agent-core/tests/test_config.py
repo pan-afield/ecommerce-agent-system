@@ -22,6 +22,14 @@ def test_settings_read_shared_database_url(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.database_url == database_url
 
 
+def test_settings_load_temporary_demo_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEMO_USER_ID", "demo-user-wang")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.demo_user_id == "demo-user-wang"
+
+
 def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test")

@@ -4,10 +4,56 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
-// Add conventional application models here in later phases. Prisma owns relational
-// business data only (for example customers, orders, tickets, and audit records).
-// Vector indexes, retrieval chunks, checkpoints, and agent runtime state are owned
-// by agent-core migrations and must not be declared in this schema.
+enum OrderStatus {
+  PENDING
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model User {
+  id        String   @id @db.VarChar(64)
+  name      String   @db.VarChar(100)
+  email     String   @unique @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  orders    Order[]
+
+  @@map("users")
+}
+
+model Order {
+  id             String          @id @db.VarChar(64)
+  userId         String          @map("user_id") @db.VarChar(64)
+  orderNumber    String          @unique @map("order_number") @db.VarChar(32)
+  status         OrderStatus
+  totalAmount    Decimal         @map("total_amount") @db.Decimal(12, 2)
+  currency       String          @default("CNY") @db.Char(3)
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  shipmentEvents ShipmentEvent[]
+
+  @@index([userId])
+  @@map("orders")
+}
+
+model ShipmentEvent {
+  id          String   @id @db.VarChar(64)
+  orderId     String   @map("order_id") @db.VarChar(64)
+  status      String   @db.VarChar(50)
+  description String   @db.VarChar(255)
+  location    String?  @db.VarChar(100)
+  occurredAt  DateTime @map("occurred_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, occurredAt])
+  @@map("shipment_events")
+}
+
+// Prisma owns conventional relational business data. Vector indexes, retrieval
+// chunks, checkpoints, and agent runtime state remain outside this schema.
