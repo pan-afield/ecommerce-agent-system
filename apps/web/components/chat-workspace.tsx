@@ -25,6 +25,7 @@ import {
   type ChatErrorDetail,
   type LocalChatMessage,
 } from "@/types/chat";
+import { OrderLookup } from "@/components/order-lookup";
 
 function countCharacters(value: string) {
   return Array.from(value).length;
@@ -242,7 +243,7 @@ export function ChatWorkspace() {
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
-          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.1</p>
+          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.2</p>
           <h1 id="workspace-title" className="text-base font-bold text-ink">
             客服工作台
           </h1>
@@ -266,6 +267,8 @@ export function ChatWorkspace() {
           </motion.div>
         </AnimatePresence>
       </header>
+
+      <OrderLookup />
 
       <section className="min-h-0 flex-1 overflow-y-auto" aria-label="消息记录">
         {messages.length === 0 ? (

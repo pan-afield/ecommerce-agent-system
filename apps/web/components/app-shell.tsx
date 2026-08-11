@@ -28,7 +28,7 @@ export function AppShell() {
           </nav>
           <div className="mt-auto border-t border-line pt-4">
             <p className="font-mono text-[10px] uppercase text-ink-muted">Release channel</p>
-            <p className="mt-1 text-sm font-semibold text-ink">V0.1 · Single turn</p>
+            <p className="mt-1 text-sm font-semibold text-ink">V0.2 · Orders</p>
           </div>
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
