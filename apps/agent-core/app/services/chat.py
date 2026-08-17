@@ -1,15 +1,16 @@
+import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
+from langchain_core.messages import AnyMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
-class ChatModel(Protocol):
-    async def generate_reply(self, message: str) -> str: ...
-
-
-@dataclass(frozen=True)
-class ChatResult:
-    content: str
-    model: str
+from app.agents.support_graph import (
+    SupportState,
+    build_support_graph,
+)
 
 
 class ChatError(Exception):
@@ -40,17 +41,63 @@ class EmptyChatResponseError(ChatProviderUnavailableError):
     """Raised when the model returns no usable assistant text."""
 
 
+class ChatModel(Protocol):
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+    ) -> str: ...
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    content: str
+    model: str
+
+
 class ChatService:
     def __init__(
         self,
         chat_model: ChatModel,
         model_name: str,
+        checkpointer: BaseCheckpointSaver[Any] | None = None,
     ) -> None:
-        self._chat_model = chat_model
+        self._graph = build_support_graph(
+            chat_model.generate_reply,
+            checkpointer=checkpointer,
+        )
         self._model_name = model_name
+        self._checkpoint_lock = asyncio.Lock()
 
-    async def reply(self, message: str) -> ChatResult:
-        content = (await self._chat_model.generate_reply(message)).strip()
+    async def reply(
+        self,
+        message: str,
+        thread_id: str | None = None,
+        request_id: str | None = None,
+    ) -> ChatResult:
+        config: RunnableConfig | None = None
+
+        if thread_id is not None:
+            config = {
+                "configurable": {
+                    "thread_id": thread_id,
+                }
+            }
+        initial_state: SupportState = {
+            "user_message": message,
+            "request_id": request_id,
+        }
+        if thread_id is None:
+            state = await self._graph.ainvoke(
+                initial_state,
+                config=config,
+            )
+        else:
+            async with self._checkpoint_lock:
+                state = await self._graph.ainvoke(
+                    initial_state,
+                    config=config,
+                )
+        content = state.get("response", "").strip()
 
         if not content:
             raise EmptyChatResponseError("Chat model returned an empty response.")

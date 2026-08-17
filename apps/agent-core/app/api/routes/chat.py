@@ -27,7 +27,11 @@ async def chat(
     payload: ChatRequest,
     service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> ChatResponse:
-    result = await service.reply(payload.message)
+    result = await service.reply(
+        payload.message,
+        payload.thread_id,
+        request_id=payload.request_id,
+    )
 
     return ChatResponse(
         assistant=AssistantMessage(content=result.content),

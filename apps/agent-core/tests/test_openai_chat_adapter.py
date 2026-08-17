@@ -61,7 +61,9 @@ async def test_openai_chat_adapter_generates_reply_with_system_and_user_messages
             timeout_seconds=30.0,
         )
 
-        reply = await adapter.generate_reply("请问什么时候发货？")
+        reply = await adapter.generate_reply(
+            [HumanMessage(content="请问什么时候发货？")]
+        )
 
     assert reply == "测试助手回复"
     chat_model.ainvoke.assert_awaited_once()
@@ -126,7 +128,9 @@ async def test_openai_chat_adapter_maps_provider_errors(
         )
 
         with pytest.raises(expected_error) as caught_error:
-            await adapter.generate_reply("测试消息")
+            await adapter.generate_reply(
+                [HumanMessage(content="测试消息")]
+            )
 
     assert caught_error.value.__cause__ is upstream_error
     assert "internal provider detail" not in str(caught_error.value)

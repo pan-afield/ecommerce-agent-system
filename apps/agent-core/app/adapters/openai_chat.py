@@ -1,4 +1,6 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+from collections.abc import Sequence
+
+from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from openai import (
     APITimeoutError,
@@ -47,12 +49,15 @@ class OpenAIChatAdapter:
             store=False,
         )
 
-    async def generate_reply(self, message: str) -> str:
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+    ) -> str:
         try:
             response = await self._client.ainvoke(
                 [
                     SystemMessage(content=SYSTEM_PROMPT),
-                    HumanMessage(content=message),
+                    *messages,
                 ]
             )
         except (AuthenticationError, PermissionDeniedError) as error:

@@ -26,10 +26,21 @@ def create_test_app(service: ChatService) -> FastAPI:
     return app
 
 
-async def post_chat(app: FastAPI, message: str) -> Response:
+async def post_chat(
+    app: FastAPI,
+    message: str,
+    thread_id: str | None = None,
+    request_id: str | None = None,
+) -> Response:
+    payload = {"message": message}
+    if thread_id is not None:
+        payload["thread_id"] = thread_id
+    if request_id is not None:
+        payload["request_id"] = request_id
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        return await client.post("/v1/chat", json={"message": message})
+        return await client.post("/v1/chat", json=payload)
 
 
 @pytest.mark.asyncio
@@ -50,7 +61,35 @@ async def test_chat_returns_assistant_response() -> None:
         },
         "model": "test-model",
     }
-    service.reply.assert_awaited_once_with("如何查询订单？")
+    service.reply.assert_awaited_once_with(
+        "如何查询订单？",
+        None,
+        request_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_forwards_normalized_thread_id() -> None:
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="收到。",
+        model="test-model",
+    )
+    app = create_test_app(service)
+
+    response = await post_chat(
+        app,
+        "继续查询",
+        thread_id="  thread-1  ",
+        request_id="  request-1  ",
+    )
+
+    assert response.status_code == 200
+    service.reply.assert_awaited_once_with(
+        "继续查询",
+        "thread-1",
+        request_id="request-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -59,6 +98,45 @@ async def test_chat_rejects_blank_message() -> None:
     app = create_test_app(service)
 
     response = await post_chat(app, "   ")
+
+    assert response.status_code == 422
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("thread_id", ["", "   ", "a" * 129])
+@pytest.mark.asyncio
+async def test_chat_rejects_invalid_thread_id(thread_id: str) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+
+    response = await post_chat(app, "你好", thread_id=thread_id)
+
+    assert response.status_code == 422
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("request_id", ["", "   ", "a" * 129])
+@pytest.mark.asyncio
+async def test_chat_rejects_invalid_request_id(request_id: str) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+
+    response = await post_chat(app, "你好", request_id=request_id)
+
+    assert response.status_code == 422
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_request_id_without_thread_id() -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+
+    response = await post_chat(
+        app,
+        "你好",
+        request_id="request-1",
+    )
 
     assert response.status_code == 422
     service.reply.assert_not_awaited()

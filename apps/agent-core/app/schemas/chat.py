@@ -1,6 +1,6 @@
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, model_validator
 
 ChatMessage = Annotated[
     str,
@@ -12,8 +12,36 @@ ChatMessage = Annotated[
 ]
 
 
+ChatThreadId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=128,
+    ),
+]
+
+ChatRequestId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=128,
+    ),
+]
+
+
 class ChatRequest(BaseModel):
     message: ChatMessage
+    thread_id: ChatThreadId | None = None
+    request_id: ChatRequestId | None = None
+
+    @model_validator(mode="after")
+    def request_id_requires_thread_id(self) -> Self:
+        if self.request_id is not None and self.thread_id is None:
+            raise ValueError("thread_id is required when request_id is provided.")
+
+        return self
 
 
 class AssistantMessage(BaseModel):

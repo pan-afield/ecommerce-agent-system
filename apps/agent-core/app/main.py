@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from langgraph.checkpoint.memory import InMemorySaver
 
 from app.adapters.openai_chat import OpenAIChatAdapter
 from app.api.exception_handlers import chat_error_handler
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.chat_service = ChatService(
                 chat_model=chat_model,
                 model_name=app_settings.openai_agent_model,
+                checkpointer=InMemorySaver(),
             )
         try:
             yield
