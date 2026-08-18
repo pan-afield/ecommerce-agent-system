@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.adapters.openai_chat import OpenAIChatAdapter
 from app.api.exception_handlers import chat_error_handler
@@ -24,26 +24,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.readiness_probe = database_is_ready
         app.state.chat_service = None
 
-        if app_settings.openai_api_key is not None:
-            chat_model = OpenAIChatAdapter(
-                api_key=app_settings.openai_api_key,
-                model=app_settings.openai_agent_model,
-                base_url=(
-                    str(app_settings.openai_base_url)
-                    if app_settings.openai_base_url is not None
-                    else None
-                ),
-                reasoning_effort=app_settings.openai_reasoning_effort,
-                use_responses_api=app_settings.openai_use_responses_api,
-                timeout_seconds=app_settings.openai_request_timeout_seconds,
-            )
-            app.state.chat_service = ChatService(
-                chat_model=chat_model,
-                model_name=app_settings.openai_agent_model,
-                checkpointer=InMemorySaver(),
-            )
         try:
-            yield
+            if app_settings.openai_api_key is None:
+                yield
+                return
+
+            async with AsyncPostgresSaver.from_conn_string(
+                app_settings.database_url,
+            ) as checkpointer:
+                await checkpointer.setup()
+
+                chat_model = OpenAIChatAdapter(
+                    api_key=app_settings.openai_api_key,
+                    model=app_settings.openai_agent_model,
+                    base_url=(
+                        str(app_settings.openai_base_url)
+                        if app_settings.openai_base_url is not None
+                        else None
+                    ),
+                    reasoning_effort=app_settings.openai_reasoning_effort,
+                    use_responses_api=app_settings.openai_use_responses_api,
+                    timeout_seconds=app_settings.openai_request_timeout_seconds,
+                )
+                app.state.chat_service = ChatService(
+                    chat_model=chat_model,
+                    model_name=app_settings.openai_agent_model,
+                    checkpointer=checkpointer,
+                )
+                yield
         finally:
             await engine.dispose()
 

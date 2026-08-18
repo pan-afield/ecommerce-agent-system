@@ -95,6 +95,23 @@ async def test_chat_service_calls_use_independent_graph_state() -> None:
     ]
 
 
+async def test_chat_service_keeps_no_thread_calls_stateless_with_checkpointer() -> None:
+    chat_model = FakeChatModel(response="收到。")
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        checkpointer=InMemorySaver(),
+    )
+
+    await service.reply("第一条消息")
+    await service.reply("第二条消息")
+
+    assert chat_model.received_messages == [
+        [("human", "第一条消息")],
+        [("human", "第二条消息")],
+    ]
+
+
 async def test_chat_service_restores_state_for_the_same_thread() -> None:
     chat_model = FakeChatModel(response="收到。")
     checkpointer = InMemorySaver()

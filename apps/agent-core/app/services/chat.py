@@ -61,7 +61,10 @@ class ChatService:
         model_name: str,
         checkpointer: BaseCheckpointSaver[Any] | None = None,
     ) -> None:
-        self._graph = build_support_graph(
+        self._stateless_graph = build_support_graph(
+            chat_model.generate_reply,
+        )
+        self._checkpointed_graph = build_support_graph(
             chat_model.generate_reply,
             checkpointer=checkpointer,
         )
@@ -74,26 +77,23 @@ class ChatService:
         thread_id: str | None = None,
         request_id: str | None = None,
     ) -> ChatResult:
-        config: RunnableConfig | None = None
 
-        if thread_id is not None:
-            config = {
-                "configurable": {
-                    "thread_id": thread_id,
-                }
-            }
         initial_state: SupportState = {
             "user_message": message,
             "request_id": request_id,
         }
         if thread_id is None:
-            state = await self._graph.ainvoke(
+            state = await self._stateless_graph.ainvoke(
                 initial_state,
-                config=config,
             )
         else:
+            config: RunnableConfig = {
+                "configurable": {
+                    "thread_id": thread_id,
+                }
+            }
             async with self._checkpoint_lock:
-                state = await self._graph.ainvoke(
+                state = await self._checkpointed_graph.ainvoke(
                     initial_state,
                     config=config,
                 )
