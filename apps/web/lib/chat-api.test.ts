@@ -20,13 +20,19 @@ describe("sendChatMessage", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(sendChatMessage("你好")).resolves.toEqual({
+    const request = {
+      message: "你好",
+      thread_id: "thread-1",
+      request_id: "request-1",
+    };
+
+    await expect(sendChatMessage(request)).resolves.toEqual({
       assistant: { content: "可以帮您。" },
       model: "test-model",
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chat",
-      expect.objectContaining({ body: JSON.stringify({ message: "你好" }) }),
+      expect.objectContaining({ body: JSON.stringify(request) }),
     );
   });
 
@@ -41,7 +47,7 @@ describe("sendChatMessage", () => {
       ),
     );
 
-    await expect(sendChatMessage("你好")).rejects.toMatchObject({
+    await expect(sendChatMessage({ message: "你好" })).rejects.toMatchObject({
       code: "chat_timeout",
       message: "客服服务响应超时，请稍后重试。",
       status: 504,
@@ -51,7 +57,7 @@ describe("sendChatMessage", () => {
   it("normalizes a browser network failure", async () => {
     vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockRejectedValue(new TypeError("offline")));
 
-    await expect(sendChatMessage("你好")).rejects.toEqual(
+    await expect(sendChatMessage({ message: "你好" })).rejects.toEqual(
       expect.objectContaining<Partial<ChatApiError>>({
         code: "chat_network_error",
         status: 0,
@@ -65,7 +71,7 @@ describe("sendChatMessage", () => {
       vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ assistant: { content: null } })),
     );
 
-    await expect(sendChatMessage("你好")).rejects.toMatchObject({
+    await expect(sendChatMessage({ message: "你好" })).rejects.toMatchObject({
       code: "chat_invalid_response",
       status: 200,
     });

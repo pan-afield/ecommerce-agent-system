@@ -1,10 +1,14 @@
 import os
+from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.config import Settings
 from app.main import create_app
+
+TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
 
 
 @pytest.mark.integration
@@ -19,6 +23,7 @@ async def test_order_detail_uses_isolated_postgres() -> None:
             environment="test",
             database_url=database_url,
             openai_api_key=None,
+            jwt_secret_key=TEST_JWT_SECRET,
             _env_file=None,
         )
     )
@@ -29,8 +34,23 @@ async def test_order_detail_uses_isolated_postgres() -> None:
             transport=transport,
             base_url="http://testserver",
         ) as client:
-            owned_response = await client.get("/v1/orders/order-demo-001")
-            hidden_response = await client.get("/v1/orders/order-demo-002")
+            token = jwt.encode(
+                {
+                    "sub": "demo-user-li",
+                    "exp": datetime.now(UTC) + timedelta(minutes=5),
+                },
+                TEST_JWT_SECRET,
+                algorithm="HS256",
+            )
+            headers = {"Authorization": f"Bearer {token}"}
+            owned_response = await client.get(
+                "/v1/orders/order-demo-001",
+                headers=headers,
+            )
+            hidden_response = await client.get(
+                "/v1/orders/order-demo-002",
+                headers=headers,
+            )
 
     assert owned_response.status_code == 200
     owned_order = owned_response.json()

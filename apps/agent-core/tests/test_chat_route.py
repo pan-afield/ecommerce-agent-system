@@ -1,5 +1,7 @@
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import jwt
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
@@ -13,12 +15,27 @@ from app.services.chat import (
     ChatService,
 )
 
+TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+
+
+def make_auth_headers(sub: str = "demo-user-li") -> dict[str, str]:
+    token = jwt.encode(
+        {
+            "sub": sub,
+            "exp": datetime.now(UTC) + timedelta(minutes=5),
+        },
+        TEST_JWT_SECRET,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
 
 def create_test_app(service: ChatService) -> FastAPI:
     settings = Settings(
         environment="test",
         database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
         openai_api_key=None,
+        jwt_secret_key=TEST_JWT_SECRET,
         _env_file=None,
     )
     app = create_app(settings)
@@ -31,6 +48,7 @@ async def post_chat(
     message: str,
     thread_id: str | None = None,
     request_id: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> Response:
     payload = {"message": message}
     if thread_id is not None:
@@ -40,7 +58,11 @@ async def post_chat(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        return await client.post("/v1/chat", json=payload)
+        return await client.post(
+            "/v1/chat",
+            json=payload,
+            headers=headers if headers is not None else make_auth_headers(),
+        )
 
 
 @pytest.mark.asyncio
@@ -63,6 +85,7 @@ async def test_chat_returns_assistant_response() -> None:
     }
     service.reply.assert_awaited_once_with(
         "如何查询订单？",
+        "demo-user-li",
         None,
         request_id=None,
     )
@@ -87,6 +110,7 @@ async def test_chat_forwards_normalized_thread_id() -> None:
     assert response.status_code == 200
     service.reply.assert_awaited_once_with(
         "继续查询",
+        "demo-user-li",
         "thread-1",
         request_id="request-1",
     )
@@ -161,12 +185,27 @@ async def test_chat_maps_service_timeout_to_stable_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_requires_bearer_token_before_service_lookup(
+    client: AsyncClient,
+) -> None:
+    response = await client.post(
+        "/v1/chat",
+        json={"message": "商品什么时候发货？"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "请先登录。"}
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.asyncio
 async def test_chat_without_api_key_returns_not_configured(
     client: AsyncClient,
 ) -> None:
     response = await client.post(
         "/v1/chat",
         json={"message": "商品什么时候发货？"},
+        headers=make_auth_headers(),
     )
 
     assert response.status_code == 503

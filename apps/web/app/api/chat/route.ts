@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 
 import { isBackendChatError, isChatResponse } from "@/lib/chat-contract";
-import { CHAT_MESSAGE_MAX_LENGTH, type ChatError, type ChatRequest } from "@/types/chat";
+import {
+  CHAT_CONTEXT_ID_MAX_LENGTH,
+  CHAT_MESSAGE_MAX_LENGTH,
+  type ChatError,
+  type ChatRequest,
+} from "@/types/chat";
 
 const DEFAULT_AGENT_CORE_URL = "http://localhost:8000";
 
@@ -15,6 +20,19 @@ function errorResponse(
 
 function getMessageLength(message: string) {
   return Array.from(message).length;
+}
+
+function normalizeOptionalId(value: unknown) {
+  return typeof value === "string" ? value.trim() : value;
+}
+
+function isValidOptionalId(value: unknown): value is string | undefined {
+  return (
+    value === undefined ||
+    (typeof value === "string" &&
+      getMessageLength(value) > 0 &&
+      getMessageLength(value) <= CHAT_CONTEXT_ID_MAX_LENGTH)
+  );
 }
 
 export async function POST(request: Request) {
@@ -49,7 +67,30 @@ export async function POST(request: Request) {
     );
   }
 
-  const payload: ChatRequest = { message };
+  const threadId = normalizeOptionalId("thread_id" in body ? body.thread_id : undefined);
+  const requestId = normalizeOptionalId("request_id" in body ? body.request_id : undefined);
+
+  if (!isValidOptionalId(threadId) || !isValidOptionalId(requestId)) {
+    return errorResponse(
+      400,
+      "chat_invalid_request",
+      `thread_id 和 request_id 长度必须为 1 至 ${CHAT_CONTEXT_ID_MAX_LENGTH} 个字符。`,
+    );
+  }
+
+  if (requestId !== undefined && threadId === undefined) {
+    return errorResponse(
+      400,
+      "chat_invalid_request",
+      "提供 request_id 时必须同时提供 thread_id。",
+    );
+  }
+
+  const payload: ChatRequest = {
+    message,
+    ...(threadId === undefined ? {} : { thread_id: threadId }),
+    ...(requestId === undefined ? {} : { request_id: requestId }),
+  };
   const agentCoreUrl = (process.env.AGENT_CORE_URL || DEFAULT_AGENT_CORE_URL).replace(/\/+$/, "");
 
   let upstreamResponse: Response;

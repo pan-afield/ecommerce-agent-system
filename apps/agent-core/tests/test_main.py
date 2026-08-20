@@ -24,7 +24,10 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
         patch("app.main.OpenAIChatAdapter") as adapter_type,
         patch("app.main.ChatService") as service_type,
         patch("app.main.AsyncPostgresSaver") as saver_type,
+        patch("app.main.build_lookup_order_tool") as tool_builder,
     ):
+        fake_order_tool = MagicMock()
+        tool_builder.return_value = fake_order_tool
         saver_type.from_conn_string.return_value = checkpointer_context
         application = create_app(settings)
 
@@ -40,3 +43,5 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
     checkpointer_context.__aenter__.assert_awaited_once()
     checkpointer_context.__aexit__.assert_awaited_once()
     adapter_type.assert_called_once()
+    tool_builder.assert_called_once_with(application.state.database_engine)
+    assert service_type.call_args.kwargs["order_tools"] == [fake_order_tool]

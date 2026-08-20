@@ -61,10 +61,11 @@ class Settings(BaseSettings):
         "openai_api_key",
         "openai_base_url",
         "openai_reasoning_effort",
+        "jwt_secret_key",
         mode="before",
     )
     @classmethod
-    def empty_optional_openai_value_is_none(
+    def empty_optional_configuration_value_is_none(
         cls,
         value: object,
     ) -> object:
@@ -81,11 +82,10 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    demo_user_id: str = Field(
-        default="demo-user-li",
-        validation_alias="DEMO_USER_ID",
-        min_length=1,
-        max_length=64,
+    jwt_secret_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="JWT_SECRET_KEY",
+        min_length=32,
     )
 
 

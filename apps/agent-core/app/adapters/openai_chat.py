@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
+from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from openai import (
     APITimeoutError,
@@ -21,9 +22,13 @@ from app.services.chat import (
 SYSTEM_PROMPT = (
     "你是电商平台的客服助手。"
     "请用简洁、友好的中文回答一般商品、配送和售后政策问题。"
-    "你无法查询真实订单或执行退款；缺少信息时请明确说明，"
+    "你不能执行退款或修改订单；订单查询只能通过系统提供的订单工具完成；"
     "并建议用户联系人工客服。"
     "不要编造订单状态、价格、库存、承诺或平台政策。"
+    "没有提供订单工具时，不能编造订单信息；"
+    "提供订单工具并且用户给出订单编号时，使用工具查询；"
+    "工具返回错误时，向用户说明无法完成查询；"
+    "仍然不能退款、修改订单或编造状态。"
 )
 
 
@@ -52,9 +57,11 @@ class OpenAIChatAdapter:
     async def generate_reply(
         self,
         messages: Sequence[AnyMessage],
-    ) -> str:
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage:
+        client = self._client if tools is None else self._client.bind_tools(tools)
         try:
-            response = await self._client.ainvoke(
+            response = await client.ainvoke(
                 [
                     SystemMessage(content=SYSTEM_PROMPT),
                     *messages,
@@ -71,4 +78,4 @@ class OpenAIChatAdapter:
         except OpenAIError as error:
             raise ChatProviderUnavailableError("Chat provider is unavailable.") from error
 
-        return response.text
+        return response

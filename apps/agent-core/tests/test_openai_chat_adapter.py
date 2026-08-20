@@ -1,8 +1,9 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
 from openai import (
     APITimeoutError,
     AuthenticationError,
@@ -20,6 +21,12 @@ from app.services.chat import (
     ChatProviderTimeoutError,
     ChatProviderUnavailableError,
 )
+
+
+@tool
+def lookup_order(order_id: str) -> str:
+    """Look up an order by ID for adapter binding tests."""
+    return order_id
 
 
 def test_openai_chat_adapter_configures_chat_openai_without_network_call() -> None:
@@ -65,13 +72,53 @@ async def test_openai_chat_adapter_generates_reply_with_system_and_user_messages
             [HumanMessage(content="请问什么时候发货？")]
         )
 
-    assert reply == "测试助手回复"
+    assert isinstance(reply, AIMessage)
+    assert reply.text == "测试助手回复"
     chat_model.ainvoke.assert_awaited_once()
 
     messages = chat_model.ainvoke.await_args.args[0]
     assert len(messages) == 2
     assert messages[0] == SystemMessage(content=SYSTEM_PROMPT)
     assert messages[1] == HumanMessage(content="请问什么时候发货？")
+
+
+async def test_openai_chat_adapter_binds_tools_before_model_call() -> None:
+    chat_model = MagicMock()
+    bound_model = MagicMock()
+    bound_model.ainvoke = AsyncMock(
+        return_value=AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "lookup_order",
+                    "args": {"order_id": "order-demo-001"},
+                    "id": "call-order-1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+    chat_model.bind_tools.return_value = bound_model
+
+    with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
+        adapter = OpenAIChatAdapter(
+            api_key=SecretStr("test-secret-key"),
+            model="gpt-test-model",
+            base_url=None,
+            reasoning_effort=None,
+            use_responses_api=True,
+            timeout_seconds=30.0,
+        )
+
+        reply = await adapter.generate_reply(
+            [HumanMessage(content="查询订单 order-demo-001")],
+            tools=[lookup_order],
+        )
+
+    chat_model.bind_tools.assert_called_once_with([lookup_order])
+    chat_model.ainvoke.assert_not_called()
+    bound_model.ainvoke.assert_awaited_once()
+    assert reply.tool_calls[0]["name"] == "lookup_order"
 
 
 def make_status_error(

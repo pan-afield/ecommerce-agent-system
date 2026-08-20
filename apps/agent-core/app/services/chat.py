@@ -1,10 +1,12 @@
 import asyncio
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.agents.support_graph import (
@@ -45,7 +47,8 @@ class ChatModel(Protocol):
     async def generate_reply(
         self,
         messages: Sequence[AnyMessage],
-    ) -> str: ...
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage: ...
 
 
 @dataclass(frozen=True)
@@ -60,13 +63,17 @@ class ChatService:
         chat_model: ChatModel,
         model_name: str,
         checkpointer: BaseCheckpointSaver[Any] | None = None,
+        *,
+        order_tools: Sequence[BaseTool] = (),
     ) -> None:
         self._stateless_graph = build_support_graph(
             chat_model.generate_reply,
+            order_tools=order_tools,
         )
         self._checkpointed_graph = build_support_graph(
             chat_model.generate_reply,
             checkpointer=checkpointer,
+            order_tools=order_tools,
         )
         self._model_name = model_name
         self._checkpoint_lock = asyncio.Lock()
@@ -74,11 +81,13 @@ class ChatService:
     async def reply(
         self,
         message: str,
+        user_id: str,
         thread_id: str | None = None,
         request_id: str | None = None,
     ) -> ChatResult:
 
         initial_state: SupportState = {
+            "user_id": user_id,
             "user_message": message,
             "request_id": request_id,
         }
@@ -87,9 +96,13 @@ class ChatService:
                 initial_state,
             )
         else:
+            checkpoint_thread_id = json.dumps(
+                [user_id, thread_id],
+                separators=(",", ":"),
+            )
             config: RunnableConfig = {
                 "configurable": {
-                    "thread_id": thread_id,
+                    "thread_id": checkpoint_thread_id,
                 }
             }
             async with self._checkpoint_lock:

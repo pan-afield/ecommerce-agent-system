@@ -13,19 +13,26 @@ import {
   AlertCircle,
   Bot,
   LoaderCircle,
+  MessageSquarePlus,
   MessageSquareText,
   RotateCcw,
   Send,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
+import { OrderLookup } from "@/components/order-lookup";
 import { ChatApiError, sendChatMessage } from "@/lib/chat-api";
+import {
+  clearChatSession,
+  createChatIdentifier,
+  loadChatSession,
+  saveChatSession,
+} from "@/lib/chat-session";
 import {
   CHAT_MESSAGE_MAX_LENGTH,
   type ChatErrorDetail,
   type LocalChatMessage,
 } from "@/types/chat";
-import { OrderLookup } from "@/components/order-lookup";
 
 function countCharacters(value: string) {
   return Array.from(value).length;
@@ -130,7 +137,9 @@ export function ChatWorkspace() {
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
-  const messageCounter = useRef(0);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionAnnouncement, setSessionAnnouncement] = useState("");
   const requestInFlight = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const shouldReduceMotion = useReducedMotion() ?? false;
@@ -138,9 +147,28 @@ export function ChatWorkspace() {
   const trimmedDraft = draft.trim();
   const draftLength = countCharacters(draft);
   const canSubmit =
+    sessionReady &&
+    Boolean(threadId) &&
     !activeRequestId &&
     trimmedDraft.length > 0 &&
     countCharacters(trimmedDraft) <= CHAT_MESSAGE_MAX_LENGTH;
+
+  useEffect(() => {
+    const restoredSession = loadChatSession(window.sessionStorage);
+    // Session storage is client-only, so restoration must follow server hydration.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setThreadId(restoredSession?.threadId ?? createChatIdentifier("thread"));
+    setMessages(restoredSession?.messages ?? []);
+    setSessionReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionReady || threadId === null) {
+      return;
+    }
+
+    saveChatSession(window.sessionStorage, { threadId, messages });
+  }, [messages, sessionReady, threadId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
@@ -149,13 +177,8 @@ export function ChatWorkspace() {
     });
   }, [activeRequestId, messages, shouldReduceMotion]);
 
-  function nextMessageId(role: LocalChatMessage["role"]) {
-    messageCounter.current += 1;
-    return `${role}-${messageCounter.current}`;
-  }
-
   async function requestReply(userMessage: LocalChatMessage) {
-    if (requestInFlight.current) {
+    if (requestInFlight.current || threadId === null || !userMessage.requestId) {
       return;
     }
 
@@ -170,9 +193,13 @@ export function ChatWorkspace() {
     );
 
     try {
-      const response = await sendChatMessage(userMessage.content);
+      const response = await sendChatMessage({
+        message: userMessage.content,
+        thread_id: threadId,
+        request_id: userMessage.requestId,
+      });
       const assistantMessage: LocalChatMessage = {
-        id: nextMessageId("assistant"),
+        id: createChatIdentifier("message"),
         role: "assistant",
         content: response.assistant.content,
         model: response.model,
@@ -206,9 +233,10 @@ export function ChatWorkspace() {
     }
 
     const userMessage: LocalChatMessage = {
-      id: nextMessageId("user"),
+      id: createChatIdentifier("message"),
       role: "user",
       content: trimmedDraft,
+      requestId: createChatIdentifier("request"),
       state: "pending",
     };
 
@@ -239,33 +267,63 @@ export function ChatWorkspace() {
     }
   }
 
+  function startNewSession() {
+    if (requestInFlight.current) {
+      return;
+    }
+
+    clearChatSession(window.sessionStorage);
+    setThreadId(createChatIdentifier("thread"));
+    setMessages([]);
+    setDraft("");
+    setSessionAnnouncement((current) =>
+      current === "已开始新会话。" ? "新的会话已就绪。" : "已开始新会话。",
+    );
+  }
+
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
-          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.2</p>
+          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.3</p>
           <h1 id="workspace-title" className="text-base font-bold text-ink">
             客服工作台
           </h1>
         </div>
-        <AnimatePresence initial={false} mode="wait">
-          <motion.div
-            animate="visible"
-            initial={shouldReduceMotion ? false : "hidden"}
-            key={activeRequestId ? "busy" : "ready"}
-            variants={motionVariants.context}
+        <div className="flex items-center gap-2">
+          <AnimatePresence initial={false} mode="wait">
+            <motion.div
+              animate="visible"
+              data-motion-mode={shouldReduceMotion ? "reduced" : "standard"}
+              initial={shouldReduceMotion ? false : "hidden"}
+              key={activeRequestId ? "busy" : `ready-${threadId ?? "pending"}`}
+              variants={motionVariants.context}
+            >
+              <Badge>
+                <span
+                  className={`mr-1.5 size-1.5 rounded-full ${
+                    activeRequestId ? "bg-accent" : "bg-positive"
+                  }`}
+                  aria-hidden="true"
+                />
+                {activeRequestId ? "正在响应" : "多轮会话"}
+              </Badge>
+            </motion.div>
+          </AnimatePresence>
+          <Button
+            aria-label="开始新会话"
+            className="size-9 px-0"
+            disabled={Boolean(activeRequestId) || !sessionReady}
+            onClick={startNewSession}
+            title="开始新会话"
+            variant="ghost"
           >
-            <Badge>
-              <span
-                className={`mr-1.5 size-1.5 rounded-full ${
-                  activeRequestId ? "bg-accent" : "bg-positive"
-                }`}
-                aria-hidden="true"
-              />
-              {activeRequestId ? "正在响应" : "单轮模式"}
-            </Badge>
-          </motion.div>
-        </AnimatePresence>
+            <MessageSquarePlus className="size-4" aria-hidden="true" />
+          </Button>
+          <span className="sr-only" aria-live="polite">
+            {sessionAnnouncement}
+          </span>
+        </div>
       </header>
 
       <OrderLookup />
@@ -283,7 +341,7 @@ export function ChatWorkspace() {
                   今天需要处理什么问题？
                 </h2>
                 <p className="mt-4 max-w-xl text-sm leading-6 text-ink-muted sm:text-base">
-                  每次回复仅基于当前发送的消息。刷新页面后，本地消息记录会被清空。
+                  当前会话使用持久上下文；本地消息记录保留在此浏览器标签页中。
                 </p>
               </div>
             </MotionReveal>
@@ -332,12 +390,12 @@ export function ChatWorkspace() {
             <textarea
               aria-describedby="chat-message-hint"
               className="block max-h-36 min-h-16 w-full resize-none bg-transparent px-4 py-3 text-sm leading-6 text-ink outline-none placeholder:text-ink-muted/70 disabled:cursor-wait disabled:opacity-60"
-              disabled={Boolean(activeRequestId)}
+              disabled={Boolean(activeRequestId) || !sessionReady}
               id="chat-message"
               maxLength={CHAT_MESSAGE_MAX_LENGTH}
               onChange={(event) => handleDraftChange(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入一条独立问题…"
+              placeholder="输入消息…"
               rows={2}
               value={draft}
             />

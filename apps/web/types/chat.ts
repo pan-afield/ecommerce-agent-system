@@ -1,4 +1,5 @@
 export const CHAT_MESSAGE_MAX_LENGTH = 2_000;
+export const CHAT_CONTEXT_ID_MAX_LENGTH = 128;
 
 export const BACKEND_CHAT_ERROR_CODES = [
   "chat_not_configured",
@@ -23,6 +24,8 @@ export type ChatErrorCode = BackendChatErrorCode | ProxyChatErrorCode | ClientCh
 
 export interface ChatRequest {
   message: string;
+  thread_id?: string;
+  request_id?: string;
 }
 
 export interface ChatResponse {
@@ -48,6 +51,12 @@ export interface LocalChatMessage {
   role: ChatRole;
   content: string;
   model?: string;
+  requestId?: string;
   state: "failed" | "pending" | "sent";
   error?: ChatErrorDetail;
+}
+
+export interface LocalChatSession {
+  threadId: string;
+  messages: LocalChatMessage[];
 }

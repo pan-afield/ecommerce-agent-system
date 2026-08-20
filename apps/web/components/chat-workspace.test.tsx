@@ -18,11 +18,13 @@ vi.mock("motion/react", async (importOriginal) => {
 });
 
 import { ChatApiError } from "@/lib/chat-api";
+import { CHAT_SESSION_STORAGE_KEY } from "@/lib/chat-session";
 
 import { ChatWorkspace } from "./chat-workspace";
 
 describe("ChatWorkspace", () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     sendChatMessageMock.mockReset();
     useReducedMotionMock.mockReset();
     useReducedMotionMock.mockReturnValue(false);
@@ -39,7 +41,11 @@ describe("ChatWorkspace", () => {
     await user.type(screen.getByRole("textbox", { name: "输入消息" }), "  你好  ");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
-    expect(sendChatMessageMock).toHaveBeenCalledWith("你好");
+    expect(sendChatMessageMock).toHaveBeenCalledWith({
+      message: "你好",
+      thread_id: expect.stringMatching(/^thread-/),
+      request_id: expect.stringMatching(/^request-/),
+    });
     expect(screen.getByText("你好")).toBeInTheDocument();
     const assistantMessage = await screen.findByText("您好，我可以帮您处理问题。");
     expect(assistantMessage).toBeInTheDocument();
@@ -77,7 +83,11 @@ describe("ChatWorkspace", () => {
     expect(sendChatMessageMock).not.toHaveBeenCalled();
 
     await user.keyboard("{Enter}");
-    expect(sendChatMessageMock).toHaveBeenCalledWith("第一行\n第二行");
+    expect(sendChatMessageMock).toHaveBeenCalledWith({
+      message: "第一行\n第二行",
+      thread_id: expect.stringMatching(/^thread-/),
+      request_id: expect.stringMatching(/^request-/),
+    });
   });
 
   it("disables the composer and prevents duplicate submits while loading", async () => {
@@ -151,8 +161,10 @@ describe("ChatWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "发送消息" }));
     await user.click(await screen.findByRole("button", { name: "重试这条消息" }));
 
-    expect(sendChatMessageMock).toHaveBeenNthCalledWith(1, "同一条消息");
-    expect(sendChatMessageMock).toHaveBeenNthCalledWith(2, "同一条消息");
+    const firstRequest = sendChatMessageMock.mock.calls[0]?.[0];
+    const retriedRequest = sendChatMessageMock.mock.calls[1]?.[0];
+    expect(firstRequest).toMatchObject({ message: "同一条消息" });
+    expect(retriedRequest).toEqual(firstRequest);
     expect(await screen.findByText("重试成功。")).toBeInTheDocument();
     expect(screen.getAllByText("同一条消息")).toHaveLength(1);
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
@@ -177,5 +189,119 @@ describe("ChatWorkspace", () => {
         block: "end",
       });
     });
+
+    const sessionStatus = screen.getByText("多轮会话").parentElement;
+    expect(sessionStatus).toHaveAttribute("data-motion-mode", "reduced");
+    expect(sessionStatus).toHaveStyle({ opacity: "1" });
+  });
+
+  it("reuses one thread and creates a new request ID for each message", async () => {
+    const user = userEvent.setup();
+    sendChatMessageMock
+      .mockResolvedValueOnce({
+        assistant: { content: "第一条回复" },
+        model: "test-model",
+      })
+      .mockResolvedValueOnce({
+        assistant: { content: "第二条回复" },
+        model: "test-model",
+      });
+    render(<ChatWorkspace />);
+
+    const input = screen.getByRole("textbox", { name: "输入消息" });
+    await user.type(input, "第一条消息");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第一条回复");
+    await user.type(input, "第二条消息");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第二条回复");
+
+    const firstRequest = sendChatMessageMock.mock.calls[0]?.[0];
+    const secondRequest = sendChatMessageMock.mock.calls[1]?.[0];
+    expect(firstRequest.thread_id).toBe(secondRequest.thread_id);
+    expect(firstRequest.request_id).not.toBe(secondRequest.request_id);
+  });
+
+  it("restores the tab session and continues with the persisted thread", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      CHAT_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        threadId: "thread-restored",
+        messages: [
+          {
+            id: "message-user-restored",
+            role: "user",
+            content: "之前的问题",
+            requestId: "request-restored",
+            state: "sent",
+          },
+          {
+            id: "message-assistant-restored",
+            role: "assistant",
+            content: "之前的回复",
+            model: "test-model",
+            state: "sent",
+          },
+        ],
+      }),
+    );
+    sendChatMessageMock.mockResolvedValue({
+      assistant: { content: "已结合上下文回答" },
+      model: "test-model",
+    });
+    render(<ChatWorkspace />);
+
+    expect(await screen.findByText("之前的问题")).toBeInTheDocument();
+    expect(screen.getByText("之前的回复")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "继续");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(sendChatMessageMock).toHaveBeenCalledWith({
+      message: "继续",
+      thread_id: "thread-restored",
+      request_id: expect.stringMatching(/^request-/),
+    });
+  });
+
+  it("starts an isolated new session and announces the state change", async () => {
+    const user = userEvent.setup();
+    sendChatMessageMock.mockResolvedValue({
+      assistant: { content: "第一段会话回复" },
+      model: "test-model",
+    });
+    render(<ChatWorkspace />);
+
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "第一段会话");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第一段会话回复");
+    const firstThreadId = sendChatMessageMock.mock.calls[0]?.[0].thread_id;
+
+    await user.click(screen.getByRole("button", { name: "开始新会话" }));
+
+    expect(screen.queryByText("第一段会话")).not.toBeInTheDocument();
+    expect(screen.getByText("已开始新会话。")).toBeInTheDocument();
+    expect(screen.getByText("今天需要处理什么问题？")).toBeInTheDocument();
+
+    sendChatMessageMock.mockResolvedValue({
+      assistant: { content: "第二段会话回复" },
+      model: "test-model",
+    });
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "第二段会话");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第二段会话回复");
+
+    expect(sendChatMessageMock.mock.calls[1]?.[0].thread_id).not.toBe(firstThreadId);
+  });
+
+  it("disables session reset while a request is in flight", async () => {
+    const user = userEvent.setup();
+    sendChatMessageMock.mockReturnValue(new Promise(() => undefined));
+    render(<ChatWorkspace />);
+
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "处理中");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(screen.getByRole("button", { name: "开始新会话" })).toBeDisabled();
   });
 });

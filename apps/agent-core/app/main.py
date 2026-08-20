@@ -11,6 +11,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
 from app.services.chat import ChatError, ChatService
 from app.services.health import database_is_ready
+from app.tools.orders import build_lookup_order_tool
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -46,10 +47,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     use_responses_api=app_settings.openai_use_responses_api,
                     timeout_seconds=app_settings.openai_request_timeout_seconds,
                 )
+                order_tools = [build_lookup_order_tool(engine)]
                 app.state.chat_service = ChatService(
                     chat_model=chat_model,
                     model_name=app_settings.openai_agent_model,
                     checkpointer=checkpointer,
+                    order_tools=order_tools,
                 )
                 yield
         finally:

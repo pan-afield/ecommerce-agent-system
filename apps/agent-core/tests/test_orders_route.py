@@ -1,25 +1,44 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
-from typing import Self
+from typing import Self, cast
 
+import jwt
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql.elements import TextClause
 
-from app.api.routes.orders import (
+from app.api.routes.orders import load_owned_order
+from app.services.orders import (
     OrderDetailResponse,
     ShipmentEventResponse,
-    get_demo_user_id,
-    load_owned_order,
+    fetch_owned_order,
 )
-from app.core.config import Settings
 
 DatabaseValue = str | Decimal | datetime | None
 DatabaseRow = dict[str, DatabaseValue]
+TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+
+
+def make_auth_headers(
+    sub: str = "demo-user-li",
+    *,
+    secret: str = TEST_JWT_SECRET,
+    expires_at: datetime | None = None,
+    include_sub: bool = True,
+) -> dict[str, str]:
+    payload: dict[str, str | datetime] = {
+        "exp": expires_at or datetime.now(UTC) + timedelta(minutes=5),
+    }
+    if include_sub:
+        payload["sub"] = sub
+
+    token = jwt.encode(payload, secret, algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def make_order_detail() -> OrderDetailResponse:
@@ -143,23 +162,6 @@ def install_fake_order_engine(
     return connection
 
 
-def test_demo_identity_comes_only_from_server_settings() -> None:
-    app = FastAPI()
-    app.state.settings = Settings(
-        demo_user_id="demo-user-li",
-        _env_file=None,
-    )
-    request = Request(
-        {
-            "type": "http",
-            "app": app,
-            "headers": [(b"x-demo-user-id", b"demo-user-wang")],
-        }
-    )
-
-    assert get_demo_user_id(request) == "demo-user-li"
-
-
 @pytest.mark.asyncio
 async def test_order_route_returns_loaded_order(
     client: AsyncClient,
@@ -231,7 +233,10 @@ async def test_order_route_sanitizes_database_failure(
     app.state.database_engine = FailingOrderEngine()
 
     with caplog.at_level(logging.WARNING):
-        response = await client.get("/v1/orders/order-demo-001")
+        response = await client.get(
+            "/v1/orders/order-demo-001",
+            headers=make_auth_headers(),
+        )
 
     assert response.status_code == 503
     assert response.json() == {"detail": "订单服务暂时不可用，请稍后重试。"}
@@ -241,7 +246,104 @@ async def test_order_route_sanitizes_database_failure(
 
 
 @pytest.mark.asyncio
-async def test_load_owned_order_queries_order_and_sorted_shipments() -> None:
+async def test_order_route_requires_bearer_token(
+    client: AsyncClient,
+) -> None:
+    response = await client.get("/v1/orders/order-demo-001")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "请先登录。"}
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        make_auth_headers(secret="wrong-test-secret-at-least-32-bytes"),
+        make_auth_headers(expires_at=datetime.now(UTC) - timedelta(minutes=1)),
+        make_auth_headers(include_sub=False),
+    ],
+    ids=["wrong-signature", "expired", "missing-sub"],
+)
+async def test_order_route_rejects_invalid_token(
+    client: AsyncClient,
+    headers: dict[str, str],
+) -> None:
+    response = await client.get("/v1/orders/order-demo-001", headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "访问令牌无效或已过期。"}
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.asyncio
+async def test_order_route_reports_unconfigured_auth_service(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.state.settings.jwt_secret_key = None
+
+    response = await client.get(
+        "/v1/orders/order-demo-001",
+        headers=make_auth_headers(),
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "认证服务尚未配置。"}
+
+
+@pytest.mark.asyncio
+async def test_order_route_uses_verified_subject_as_owner(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    connection = install_fake_order_engine(
+        app,
+        {
+            "id": "order-demo-001",
+            "order_number": "EC-20260810-001",
+            "status": "shipped",
+            "total_amount": Decimal("299.00"),
+            "currency": "CNY",
+            "created_at": datetime(2026, 8, 10, 8, 30, tzinfo=UTC),
+        },
+    )
+
+    response = await client.get(
+        "/v1/orders/order-demo-001",
+        headers=make_auth_headers(sub="demo-user-li"),
+    )
+
+    assert response.status_code == 200
+    assert connection.executions[0][1] == {
+        "order_id": "order-demo-001",
+        "user_id": "demo-user-li",
+    }
+
+
+@pytest.mark.asyncio
+async def test_order_route_hides_order_from_verified_other_user(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    connection = install_fake_order_engine(app, None)
+
+    response = await client.get(
+        "/v1/orders/order-demo-001",
+        headers=make_auth_headers(sub="demo-user-wang"),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "订单不存在。"}
+    assert connection.executions[0][1] == {
+        "order_id": "order-demo-001",
+        "user_id": "demo-user-wang",
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_owned_order_queries_order_and_sorted_shipments() -> None:
     app = FastAPI()
     connection = install_fake_order_engine(
         app,
@@ -277,9 +379,9 @@ async def test_load_owned_order_queries_order_and_sorted_shipments() -> None:
             },
         ],
     )
-    request = Request({"type": "http", "app": app})
+    engine = cast(AsyncEngine, app.state.database_engine)
 
-    result = await load_owned_order("order-demo-001", request, "demo-user-li")
+    result = await fetch_owned_order(engine, "order-demo-001", "demo-user-li")
 
     assert result == make_order_detail()
     assert len(connection.executions) == 2
@@ -295,12 +397,12 @@ async def test_load_owned_order_queries_order_and_sorted_shipments() -> None:
 
 
 @pytest.mark.asyncio
-async def test_load_owned_order_stops_when_order_is_unavailable() -> None:
+async def test_fetch_owned_order_stops_when_order_is_unavailable() -> None:
     app = FastAPI()
     connection = install_fake_order_engine(app, None)
-    request = Request({"type": "http", "app": app})
+    engine = cast(AsyncEngine, app.state.database_engine)
 
-    result = await load_owned_order("order-demo-002", request, "demo-user-li")
+    result = await fetch_owned_order(engine, "order-demo-002", "demo-user-li")
 
     assert result is None
     assert len(connection.executions) == 1

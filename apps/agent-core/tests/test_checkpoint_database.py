@@ -3,7 +3,8 @@ from collections.abc import Sequence
 from uuid import uuid4
 
 import pytest
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.services.chat import ChatService
@@ -14,11 +15,15 @@ class FakeChatModel:
         self.response = response
         self.received_messages: list[list[tuple[str, str]]] = []
 
-    async def generate_reply(self, messages: Sequence[AnyMessage]) -> str:
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage:
         self.received_messages.append(
             [(message.type, message.text) for message in messages]
         )
-        return self.response
+        return AIMessage(content=self.response)
 
 
 @pytest.mark.integration
@@ -40,6 +45,7 @@ async def test_postgres_checkpoint_survives_new_service_lifecycle() -> None:
         )
         await first_service.reply(
             "第一条消息",
+            user_id="checkpoint-test-user",
             thread_id=thread_id,
             request_id="request-1",
         )
@@ -55,11 +61,13 @@ async def test_postgres_checkpoint_survives_new_service_lifecycle() -> None:
 
         retried_result = await second_service.reply(
             "第一条消息",
+            user_id="checkpoint-test-user",
             thread_id=thread_id,
             request_id="request-1",
         )
         await second_service.reply(
             "第二条消息",
+            user_id="checkpoint-test-user",
             thread_id=thread_id,
             request_id="request-2",
         )

@@ -17,7 +17,7 @@ describe("AppShell", () => {
     );
     expect(within(navigation).getByText("能力配置")).not.toHaveAttribute("aria-current");
     expect(screen.getByText("今天需要处理什么问题？")).toBeInTheDocument();
-    expect(screen.getByText("单轮模式")).toBeInTheDocument();
+    expect(screen.getByText("多轮会话")).toBeInTheDocument();
   });
 
   it("starts with an empty disabled composer", () => {

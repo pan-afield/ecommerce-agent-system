@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.dependencies import get_chat_service
+from app.api.dependencies import get_chat_service, get_current_user_id
 from app.schemas.chat import (
     AssistantMessage,
     ChatRequest,
@@ -25,10 +25,12 @@ router = APIRouter(prefix="/v1", tags=["chat"])
 )
 async def chat(
     payload: ChatRequest,
+    current_user_id: Annotated[str, Depends(get_current_user_id)],
     service: Annotated[ChatService, Depends(get_chat_service)],
 ) -> ChatResponse:
     result = await service.reply(
         payload.message,
+        current_user_id,
         payload.thread_id,
         request_id=payload.request_id,
     )

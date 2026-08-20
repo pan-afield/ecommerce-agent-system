@@ -22,12 +22,46 @@ def test_settings_read_shared_database_url(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.database_url == database_url
 
 
-def test_settings_load_temporary_demo_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DEMO_USER_ID", "demo-user-wang")
+def test_settings_load_jwt_secret_without_exposing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-only-jwt-secret-at-least-32-bytes")
 
     settings = Settings(_env_file=None)
 
-    assert settings.demo_user_id == "demo-user-wang"
+    assert settings.jwt_secret_key is not None
+    assert (
+        settings.jwt_secret_key.get_secret_value()
+        == "test-only-jwt-secret-at-least-32-bytes"
+    )
+    assert str(settings.jwt_secret_key) == "**********"
+
+
+def test_settings_allow_jwt_secret_to_be_unconfigured() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_secret_key is None
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n\t"])
+def test_settings_treat_blank_jwt_secret_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET_KEY", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_secret_key is None
+
+
+def test_settings_reject_short_jwt_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 31)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> None:

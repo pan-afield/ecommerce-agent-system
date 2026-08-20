@@ -1,14 +1,29 @@
 import asyncio
+import json
 from collections.abc import Sequence
 from typing import cast
 
 import pytest
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import Checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.services.chat import ChatResult, ChatService, EmptyChatResponseError
+
+TEST_USER_ID = "demo-user-li"
+
+
+def checkpoint_config(
+    thread_id: str,
+    user_id: str = TEST_USER_ID,
+) -> RunnableConfig:
+    checkpoint_thread_id = json.dumps(
+        [user_id, thread_id],
+        separators=(",", ":"),
+    )
+    return {"configurable": {"thread_id": checkpoint_thread_id}}
 
 
 class FakeChatModel:
@@ -21,7 +36,11 @@ class FakeChatModel:
         self.error = error
         self.received_messages: list[list[tuple[str, str]]] = []
 
-    async def generate_reply(self, messages: Sequence[AnyMessage]) -> str:
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage:
         self.received_messages.append(
             [(message.type, message.text) for message in messages]
         )
@@ -29,7 +48,7 @@ class FakeChatModel:
         if self.error is not None:
             raise self.error
 
-        return self.response
+        return AIMessage(content=self.response)
 
 
 class BlockingFakeChatModel:
@@ -40,7 +59,11 @@ class BlockingFakeChatModel:
         self.active_calls = 0
         self.maximum_active_calls = 0
 
-    async def generate_reply(self, messages: Sequence[AnyMessage]) -> str:
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage:
         self.received_messages.append(
             [(message.type, message.text) for message in messages]
         )
@@ -54,7 +77,7 @@ class BlockingFakeChatModel:
             if len(self.received_messages) == 1:
                 self.first_call_started.set()
                 await self.release_first_call.wait()
-            return "收到。"
+            return AIMessage(content="收到。")
         finally:
             self.active_calls -= 1
 
@@ -71,7 +94,7 @@ async def test_chat_service_returns_trimmed_reply_and_configured_model() -> None
     chat_model = FakeChatModel(response="  您的商品正在准备发货。  ")
     service = ChatService(chat_model=chat_model, model_name="gpt-test-model")
 
-    result = await service.reply("请问什么时候发货？")
+    result = await service.reply("请问什么时候发货？", user_id=TEST_USER_ID)
 
     assert result == ChatResult(
         content="您的商品正在准备发货。",
@@ -86,8 +109,8 @@ async def test_chat_service_calls_use_independent_graph_state() -> None:
     chat_model = FakeChatModel(response="收到。")
     service = ChatService(chat_model=chat_model, model_name="gpt-test-model")
 
-    await service.reply("  第一条消息  ")
-    await service.reply("  第二条消息  ")
+    await service.reply("  第一条消息  ", user_id=TEST_USER_ID)
+    await service.reply("  第二条消息  ", user_id=TEST_USER_ID)
 
     assert chat_model.received_messages == [
         [("human", "第一条消息")],
@@ -103,8 +126,8 @@ async def test_chat_service_keeps_no_thread_calls_stateless_with_checkpointer() 
         checkpointer=InMemorySaver(),
     )
 
-    await service.reply("第一条消息")
-    await service.reply("第二条消息")
+    await service.reply("第一条消息", user_id=TEST_USER_ID)
+    await service.reply("第二条消息", user_id=TEST_USER_ID)
 
     assert chat_model.received_messages == [
         [("human", "第一条消息")],
@@ -123,18 +146,23 @@ async def test_chat_service_restores_state_for_the_same_thread() -> None:
 
     await service.reply(
         "第一条消息",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="request-1",
     )
-    await service.reply("第二条消息", thread_id="thread-1")
-    await service.reply("另一条消息", thread_id="thread-2")
+    await service.reply(
+        "第二条消息",
+        user_id=TEST_USER_ID,
+        thread_id="thread-1",
+    )
+    await service.reply(
+        "另一条消息",
+        user_id=TEST_USER_ID,
+        thread_id="thread-2",
+    )
 
-    thread_one_config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
-    thread_two_config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-2"}
-    }
+    thread_one_config = checkpoint_config("thread-1")
+    thread_two_config = checkpoint_config("thread-2")
     thread_one_checkpoint = await checkpointer.aget_tuple(thread_one_config)
     thread_two_checkpoint = await checkpointer.aget_tuple(thread_two_config)
 
@@ -152,6 +180,52 @@ async def test_chat_service_restores_state_for_the_same_thread() -> None:
     ]
 
 
+async def test_chat_service_isolates_same_thread_id_between_users() -> None:
+    chat_model = FakeChatModel(response="收到。")
+    checkpointer = InMemorySaver()
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        checkpointer=checkpointer,
+    )
+
+    await service.reply(
+        "用户 A 的第一条消息",
+        user_id="user-a",
+        thread_id="shared-thread",
+    )
+    await service.reply(
+        "用户 B 的第一条消息",
+        user_id="user-b",
+        thread_id="shared-thread",
+    )
+    await service.reply(
+        "用户 A 的第二条消息",
+        user_id="user-a",
+        thread_id="shared-thread",
+    )
+
+    assert chat_model.received_messages == [
+        [("human", "用户 A 的第一条消息")],
+        [("human", "用户 B 的第一条消息")],
+        [
+            ("human", "用户 A 的第一条消息"),
+            ("ai", "收到。"),
+            ("human", "用户 A 的第二条消息"),
+        ],
+    ]
+    user_a_checkpoint = await checkpointer.aget_tuple(
+        checkpoint_config("shared-thread", user_id="user-a")
+    )
+    user_b_checkpoint = await checkpointer.aget_tuple(
+        checkpoint_config("shared-thread", user_id="user-b")
+    )
+    assert user_a_checkpoint is not None
+    assert user_b_checkpoint is not None
+    assert user_a_checkpoint.checkpoint["channel_values"]["user_id"] == "user-a"
+    assert user_b_checkpoint.checkpoint["channel_values"]["user_id"] == "user-b"
+
+
 async def test_chat_service_clears_request_id_when_next_call_omits_it() -> None:
     checkpointer = InMemorySaver()
     service = ChatService(
@@ -162,14 +236,17 @@ async def test_chat_service_clears_request_id_when_next_call_omits_it() -> None:
 
     await service.reply(
         "第一条消息",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="request-1",
     )
-    await service.reply("第二条消息", thread_id="thread-1")
+    await service.reply(
+        "第二条消息",
+        user_id=TEST_USER_ID,
+        thread_id="thread-1",
+    )
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
+    config = checkpoint_config("thread-1")
     checkpoint = await checkpointer.aget_tuple(config)
 
     assert checkpoint is not None
@@ -187,11 +264,13 @@ async def test_chat_service_reuses_completed_request_in_same_thread() -> None:
 
     first_result = await service.reply(
         "同一条消息",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="request-1",
     )
     retried_result = await service.reply(
         "同一条消息",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="request-1",
     )
@@ -201,9 +280,7 @@ async def test_chat_service_reuses_completed_request_in_same_thread() -> None:
         [("human", "同一条消息")]
     ]
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
+    config = checkpoint_config("thread-1")
     checkpoint = await checkpointer.aget_tuple(config)
     assert checkpoint is not None
     assert checkpoint_messages(checkpoint.checkpoint) == [
@@ -222,11 +299,13 @@ async def test_chat_service_scopes_request_id_to_thread() -> None:
 
     await service.reply(
         "会话一",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="shared-request",
     )
     await service.reply(
         "会话二",
+        user_id=TEST_USER_ID,
         thread_id="thread-2",
         request_id="shared-request",
     )
@@ -249,6 +328,7 @@ async def test_chat_service_reuses_overlapping_duplicate_request() -> None:
     first_reply = asyncio.create_task(
         service.reply(
             "同一条消息",
+            user_id=TEST_USER_ID,
             thread_id="thread-1",
             request_id="request-1",
         )
@@ -257,6 +337,7 @@ async def test_chat_service_reuses_overlapping_duplicate_request() -> None:
     duplicate_reply = asyncio.create_task(
         service.reply(
             "同一条消息",
+            user_id=TEST_USER_ID,
             thread_id="thread-1",
             request_id="request-1",
         )
@@ -278,9 +359,7 @@ async def test_chat_service_reuses_overlapping_duplicate_request() -> None:
     ]
     assert chat_model.maximum_active_calls == 1
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
+    config = checkpoint_config("thread-1")
     checkpoint = await checkpointer.aget_tuple(config)
     assert checkpoint is not None
     assert checkpoint_messages(checkpoint.checkpoint) == [
@@ -301,6 +380,7 @@ async def test_idempotent_retry_after_empty_response_keeps_clean_history() -> No
     with pytest.raises(EmptyChatResponseError):
         await service.reply(
             "同一条消息",
+            user_id=TEST_USER_ID,
             thread_id="thread-1",
             request_id="request-1",
         )
@@ -308,6 +388,7 @@ async def test_idempotent_retry_after_empty_response_keeps_clean_history() -> No
     chat_model.response = "恢复后的回复。"
     result = await service.reply(
         "同一条消息",
+        user_id=TEST_USER_ID,
         thread_id="thread-1",
         request_id="request-1",
     )
@@ -318,9 +399,7 @@ async def test_idempotent_retry_after_empty_response_keeps_clean_history() -> No
         [("human", "同一条消息")],
     ]
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
+    config = checkpoint_config("thread-1")
     checkpoint = await checkpointer.aget_tuple(config)
     assert checkpoint is not None
     assert checkpoint_messages(checkpoint.checkpoint) == [
@@ -339,12 +418,20 @@ async def test_chat_service_serializes_overlapping_calls_for_same_thread() -> No
     )
 
     first_reply = asyncio.create_task(
-        service.reply("第一条消息", thread_id="thread-1")
+        service.reply(
+            "第一条消息",
+            user_id=TEST_USER_ID,
+            thread_id="thread-1",
+        )
     )
     await asyncio.wait_for(chat_model.first_call_started.wait(), timeout=1)
 
     second_reply = asyncio.create_task(
-        service.reply("第二条消息", thread_id="thread-1")
+        service.reply(
+            "第二条消息",
+            user_id=TEST_USER_ID,
+            thread_id="thread-1",
+        )
     )
     await asyncio.sleep(0)
 
@@ -359,9 +446,7 @@ async def test_chat_service_serializes_overlapping_calls_for_same_thread() -> No
         timeout=1,
     )
 
-    config: RunnableConfig = {
-        "configurable": {"thread_id": "thread-1"}
-    }
+    config = checkpoint_config("thread-1")
     checkpoint = await checkpointer.aget_tuple(config)
 
     assert chat_model.received_messages == [
@@ -390,7 +475,7 @@ async def test_chat_service_rejects_empty_model_reply(response: str) -> None:
     )
 
     with pytest.raises(EmptyChatResponseError, match="empty response"):
-        await service.reply("你好")
+        await service.reply("你好", user_id=TEST_USER_ID)
 
 
 async def test_chat_service_preserves_model_errors() -> None:
@@ -401,6 +486,6 @@ async def test_chat_service_preserves_model_errors() -> None:
     )
 
     with pytest.raises(RuntimeError) as caught_error:
-        await service.reply("你好")
+        await service.reply("你好", user_id=TEST_USER_ID)
 
     assert caught_error.value is expected_error

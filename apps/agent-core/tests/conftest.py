@@ -14,6 +14,7 @@ def app() -> FastAPI:
         environment="test",
         database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
         openai_api_key=None,
+        jwt_secret_key="test-only-jwt-secret-at-least-32-bytes",
         _env_file=None,
     )
     return create_app(settings)
