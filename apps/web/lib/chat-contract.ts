@@ -6,6 +6,7 @@ import {
   type ChatError,
   type ChatErrorCode,
   type ChatResponse,
+  type ChatStreamAssistantEvent,
 } from "@/types/chat";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -20,6 +21,18 @@ export function isChatResponse(value: unknown): value is ChatResponse {
   return (
     typeof value.assistant.content === "string" &&
     value.assistant.content.length > 0 &&
+    typeof value.model === "string" &&
+    value.model.length > 0
+  );
+}
+
+export function isChatStreamAssistantEvent(
+  value: unknown,
+): value is ChatStreamAssistantEvent {
+  return (
+    isRecord(value) &&
+    typeof value.content === "string" &&
+    value.content.length > 0 &&
     typeof value.model === "string" &&
     value.model.length > 0
   );

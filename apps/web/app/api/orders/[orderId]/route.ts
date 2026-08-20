@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { getBackendDetail } from "@/lib/backend-error";
 import { getBackendOrderDetail, isOrderDetail } from "@/lib/order-contract";
+import { createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   ORDER_ID_MAX_LENGTH,
   type OrderError,
@@ -51,6 +53,14 @@ export async function GET(_request: Request, context: OrderRouteContext) {
   }
 
   const agentCoreUrl = (process.env.AGENT_CORE_URL || DEFAULT_AGENT_CORE_URL).replace(/\/+$/, "");
+  const authorization = createAgentCoreAuthorization();
+  if (authorization === null) {
+    return errorResponse(
+      503,
+      "order_auth_unavailable",
+      "认证服务尚未配置，请联系管理员。",
+    );
+  }
 
   let upstreamResponse: Response;
   try {
@@ -58,6 +68,7 @@ export async function GET(_request: Request, context: OrderRouteContext) {
       `${agentCoreUrl}/v1/orders/${encodeURIComponent(orderId)}`,
       {
         method: "GET",
+        headers: { authorization },
         cache: "no-store",
         signal: AbortSignal.timeout(ORDER_UPSTREAM_TIMEOUT_MS),
       },
@@ -94,6 +105,20 @@ export async function GET(_request: Request, context: OrderRouteContext) {
   }
 
   const backendDetail = getBackendOrderDetail(upstreamBody);
+  if (upstreamResponse.status === 401 && getBackendDetail(upstreamBody)) {
+    return errorResponse(401, "order_unauthorized", "登录状态无效，请重新登录。");
+  }
+
+  if (
+    upstreamResponse.status === 503 &&
+    backendDetail === "认证服务尚未配置。"
+  ) {
+    return errorResponse(
+      503,
+      "order_auth_unavailable",
+      "认证服务尚未配置，请联系管理员。",
+    );
+  }
   if (upstreamResponse.status === 404 && backendDetail) {
     return errorResponse(404, "order_not_found", backendDetail);
   }

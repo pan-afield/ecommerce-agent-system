@@ -1,4 +1,5 @@
 import { isChatErrorCode } from "@/lib/chat-contract";
+import { isOrderDetail } from "@/lib/order-contract";
 import {
   CHAT_CONTEXT_ID_MAX_LENGTH,
   type LocalChatMessage,
@@ -44,6 +45,14 @@ function isStoredMessage(value: unknown): value is LocalChatMessage {
   }
 
   if (value.model !== undefined && typeof value.model !== "string") {
+    return false;
+  }
+
+  if (value.orderId !== undefined && !isContextId(value.orderId)) {
+    return false;
+  }
+
+  if (value.order !== undefined && !isOrderDetail(value.order)) {
     return false;
   }
 

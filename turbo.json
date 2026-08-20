@@ -1,6 +1,11 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalPassThroughEnv": ["PYTHON_BIN"],
+  "globalPassThroughEnv": [
+    "AGENT_CORE_DEMO_USER_ID",
+    "AGENT_CORE_URL",
+    "JWT_SECRET_KEY",
+    "PYTHON_BIN"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

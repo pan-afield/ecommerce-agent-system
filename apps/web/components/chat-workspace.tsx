@@ -17,25 +17,39 @@ import {
   MessageSquareText,
   RotateCcw,
   Send,
+  X,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
+import { OrderDetailCard } from "@/components/order-detail-card";
 import { OrderLookup } from "@/components/order-lookup";
-import { ChatApiError, sendChatMessage } from "@/lib/chat-api";
+import { ChatApiError, streamChatMessage } from "@/lib/chat-api";
 import {
   clearChatSession,
   createChatIdentifier,
   loadChatSession,
   saveChatSession,
 } from "@/lib/chat-session";
+import { getOrder } from "@/lib/order-api";
 import {
   CHAT_MESSAGE_MAX_LENGTH,
   type ChatErrorDetail,
+  type ChatStreamPhase,
   type LocalChatMessage,
 } from "@/types/chat";
 
 function countCharacters(value: string) {
   return Array.from(value).length;
+}
+
+const streamPhaseLabels: Record<ChatStreamPhase, string> = {
+  connecting: "正在连接客服服务",
+  processing: "正在处理请求",
+  finalizing: "正在整理回复",
+};
+
+function findExplicitOrderId(value: string) {
+  return value.match(/\border-[a-z0-9][a-z0-9_-]{0,57}\b/i)?.[0] ?? null;
 }
 
 function normalizeClientError(error: unknown): ChatErrorDetail {
@@ -74,8 +88,12 @@ function ChatMessageItem({
       variants={motionVariants.append}
     >
       <div
-        className={`flex max-w-[88%] flex-col sm:max-w-[76%] ${
-          isUser ? "items-end" : "items-start"
+        className={`flex flex-col ${
+          isUser
+            ? "max-w-[88%] items-end sm:max-w-[76%]"
+            : message.order
+              ? "w-full max-w-full items-start sm:max-w-[88%]"
+              : "max-w-[88%] items-start sm:max-w-[76%]"
         }`}
       >
         {!isUser && (
@@ -99,6 +117,16 @@ function ChatMessageItem({
 
         {!isUser && message.model && (
           <p className="mt-1.5 px-1 font-mono text-[10px] text-ink-muted">{message.model}</p>
+        )}
+
+        {!isUser && message.order && (
+          <div className="w-full min-w-0">
+            <OrderDetailCard
+              compact
+              order={message.order}
+              reduceMotion={reduceMotion}
+            />
+          </div>
         )}
 
         <AnimatePresence initial={false}>
@@ -140,7 +168,9 @@ export function ChatWorkspace() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionAnnouncement, setSessionAnnouncement] = useState("");
+  const [streamPhase, setStreamPhase] = useState<ChatStreamPhase | null>(null);
   const requestInFlight = useRef(false);
+  const activeAbortController = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const shouldReduceMotion = useReducedMotion() ?? false;
 
@@ -183,6 +213,9 @@ export function ChatWorkspace() {
     }
 
     requestInFlight.current = true;
+    const abortController = new AbortController();
+    activeAbortController.current = abortController;
+    setStreamPhase("connecting");
     setActiveRequestId(userMessage.id);
     setMessages((current) =>
       current.map((message) =>
@@ -193,16 +226,33 @@ export function ChatWorkspace() {
     );
 
     try {
-      const response = await sendChatMessage({
-        message: userMessage.content,
-        thread_id: threadId,
-        request_id: userMessage.requestId,
-      });
+      const response = await streamChatMessage(
+        {
+          message: userMessage.content,
+          thread_id: threadId,
+          request_id: userMessage.requestId,
+        },
+        {
+          signal: abortController.signal,
+          onPhaseChange: setStreamPhase,
+        },
+      );
+      const orderId = findExplicitOrderId(userMessage.content);
+      let order: LocalChatMessage["order"];
+      if (orderId !== null) {
+        try {
+          order = await getOrder(orderId);
+        } catch {
+          // The assistant response remains authoritative when structured lookup is unavailable.
+        }
+      }
       const assistantMessage: LocalChatMessage = {
         id: createChatIdentifier("message"),
         role: "assistant",
         content: response.assistant.content,
         model: response.model,
+        ...(orderId === null ? {} : { orderId }),
+        ...(order === undefined ? {} : { order }),
         state: "sent",
       };
 
@@ -223,6 +273,8 @@ export function ChatWorkspace() {
       );
     } finally {
       requestInFlight.current = false;
+      activeAbortController.current = null;
+      setStreamPhase(null);
       setActiveRequestId(null);
     }
   }
@@ -281,11 +333,15 @@ export function ChatWorkspace() {
     );
   }
 
+  function cancelReply() {
+    activeAbortController.current?.abort();
+  }
+
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
-          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.3</p>
+          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.4</p>
           <h1 id="workspace-title" className="text-base font-bold text-ink">
             客服工作台
           </h1>
@@ -306,7 +362,7 @@ export function ChatWorkspace() {
                   }`}
                   aria-hidden="true"
                 />
-                {activeRequestId ? "正在响应" : "多轮会话"}
+                {activeRequestId ? "正在响应" : "已认证会话"}
               </Badge>
             </motion.div>
           </AnimatePresence>
@@ -341,7 +397,7 @@ export function ChatWorkspace() {
                   今天需要处理什么问题？
                 </h2>
                 <p className="mt-4 max-w-xl text-sm leading-6 text-ink-muted sm:text-base">
-                  当前会话使用持久上下文；本地消息记录保留在此浏览器标签页中。
+                  会话上下文按当前身份隔离；订单问题可由订单 Agent 安全查询。
                 </p>
               </div>
             </MotionReveal>
@@ -369,9 +425,18 @@ export function ChatWorkspace() {
                   role="status"
                   variants={motionVariants.status}
                 >
-                  <div className="flex items-center gap-2 rounded-md border border-line bg-surface-raised px-4 py-3 text-sm text-ink-muted">
+                  <div className="flex items-center gap-3 rounded-md border border-line bg-surface-raised px-4 py-3 text-sm text-ink-muted">
                     <LoaderCircle className="size-4 animate-spin text-accent" aria-hidden="true" />
-                    正在等待回复
+                    <span>{streamPhase ? streamPhaseLabels[streamPhase] : "正在等待回复"}</span>
+                    <Button
+                      aria-label="取消回复"
+                      className="ml-1 h-8 px-2 text-xs"
+                      onClick={cancelReply}
+                      variant="ghost"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                      取消
+                    </Button>
                   </div>
                 </motion.li>
               )}

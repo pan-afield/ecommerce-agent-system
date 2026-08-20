@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
-import { isBackendChatError, isChatResponse } from "@/lib/chat-contract";
+import { isBackendChatError } from "@/lib/chat-contract";
 import { createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   CHAT_CONTEXT_ID_MAX_LENGTH,
@@ -20,8 +20,8 @@ function errorResponse(
   return NextResponse.json<ChatError>({ error: { code, message } }, { status });
 }
 
-function getMessageLength(message: string) {
-  return Array.from(message).length;
+function getTextLength(value: string) {
+  return Array.from(value).length;
 }
 
 function normalizeOptionalId(value: unknown) {
@@ -32,8 +32,8 @@ function isValidOptionalId(value: unknown): value is string | undefined {
   return (
     value === undefined ||
     (typeof value === "string" &&
-      getMessageLength(value) > 0 &&
-      getMessageLength(value) <= CHAT_CONTEXT_ID_MAX_LENGTH)
+      getTextLength(value) > 0 &&
+      getTextLength(value) <= CHAT_CONTEXT_ID_MAX_LENGTH)
   );
 }
 
@@ -60,8 +60,7 @@ export async function POST(request: Request) {
   }
 
   const message = body.message.trim();
-  const messageLength = getMessageLength(message);
-  if (messageLength === 0 || messageLength > CHAT_MESSAGE_MAX_LENGTH) {
+  if (getTextLength(message) === 0 || getTextLength(message) > CHAT_MESSAGE_MAX_LENGTH) {
     return errorResponse(
       400,
       "chat_invalid_request",
@@ -71,7 +70,6 @@ export async function POST(request: Request) {
 
   const threadId = normalizeOptionalId("thread_id" in body ? body.thread_id : undefined);
   const requestId = normalizeOptionalId("request_id" in body ? body.request_id : undefined);
-
   if (!isValidOptionalId(threadId) || !isValidOptionalId(requestId)) {
     return errorResponse(
       400,
@@ -88,11 +86,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const payload: ChatRequest = {
-    message,
-    ...(threadId === undefined ? {} : { thread_id: threadId }),
-    ...(requestId === undefined ? {} : { request_id: requestId }),
-  };
   const authorization = createAgentCoreAuthorization();
   if (authorization === null) {
     return errorResponse(
@@ -101,18 +94,26 @@ export async function POST(request: Request) {
       "认证服务尚未配置，请联系管理员。",
     );
   }
+
+  const payload: ChatRequest = {
+    message,
+    ...(threadId === undefined ? {} : { thread_id: threadId }),
+    ...(requestId === undefined ? {} : { request_id: requestId }),
+  };
   const agentCoreUrl = (process.env.AGENT_CORE_URL || DEFAULT_AGENT_CORE_URL).replace(/\/+$/, "");
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(`${agentCoreUrl}/v1/chat`, {
+    upstreamResponse = await fetch(`${agentCoreUrl}/v1/chat/stream`, {
       method: "POST",
       headers: {
+        accept: "text/event-stream",
         authorization,
         "content-type": "application/json",
       },
       body: JSON.stringify(payload),
       cache: "no-store",
+      signal: request.signal,
     });
   } catch {
     return errorResponse(
@@ -122,10 +123,38 @@ export async function POST(request: Request) {
     );
   }
 
-  let upstreamBody: unknown;
-  try {
-    upstreamBody = await upstreamResponse.json();
-  } catch {
+  if (!upstreamResponse.ok) {
+    let upstreamBody: unknown;
+    try {
+      upstreamBody = await upstreamResponse.json();
+    } catch {
+      return errorResponse(
+        502,
+        "chat_invalid_upstream_response",
+        "客服服务返回了无效响应，请稍后重试。",
+      );
+    }
+
+    if (isBackendChatError(upstreamBody)) {
+      return NextResponse.json(upstreamBody, { status: upstreamResponse.status });
+    }
+
+    const backendDetail = getBackendDetail(upstreamBody);
+    if (upstreamResponse.status === 401 && backendDetail) {
+      return errorResponse(401, "chat_unauthorized", "登录状态无效，请重新登录。");
+    }
+
+    if (
+      upstreamResponse.status === 503 &&
+      backendDetail === "认证服务尚未配置。"
+    ) {
+      return errorResponse(
+        503,
+        "chat_auth_unavailable",
+        "认证服务尚未配置，请联系管理员。",
+      );
+    }
+
     return errorResponse(
       502,
       "chat_invalid_upstream_response",
@@ -133,33 +162,21 @@ export async function POST(request: Request) {
     );
   }
 
-  if (upstreamResponse.ok && isChatResponse(upstreamBody)) {
-    return NextResponse.json(upstreamBody, { status: upstreamResponse.status });
-  }
-
-  if (!upstreamResponse.ok && isBackendChatError(upstreamBody)) {
-    return NextResponse.json(upstreamBody, { status: upstreamResponse.status });
-  }
-
-  const backendDetail = getBackendDetail(upstreamBody);
-  if (upstreamResponse.status === 401 && backendDetail) {
-    return errorResponse(401, "chat_unauthorized", "登录状态无效，请重新登录。");
-  }
-
-  if (
-    upstreamResponse.status === 503 &&
-    backendDetail === "认证服务尚未配置。"
-  ) {
+  const upstreamContentType = upstreamResponse.headers.get("content-type") ?? "";
+  if (!upstreamContentType.toLowerCase().includes("text/event-stream") || !upstreamResponse.body) {
     return errorResponse(
-      503,
-      "chat_auth_unavailable",
-      "认证服务尚未配置，请联系管理员。",
+      502,
+      "chat_invalid_upstream_response",
+      "客服服务返回了无效流式响应，请稍后重试。",
     );
   }
 
-  return errorResponse(
-    502,
-    "chat_invalid_upstream_response",
-    "客服服务返回了无效响应，请稍后重试。",
-  );
+  return new Response(upstreamResponse.body, {
+    status: 200,
+    headers: {
+      "cache-control": "no-cache, no-transform",
+      "content-type": "text/event-stream; charset=utf-8",
+      "x-accel-buffering": "no",
+    },
+  });
 }

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OrderDetail } from "@/types/order";
 
@@ -36,8 +36,15 @@ function callRoute(orderId: string) {
 }
 
 describe("GET /api/orders/[orderId]", () => {
+  beforeEach(() => {
+    process.env.JWT_SECRET_KEY = "test-only-jwt-secret-at-least-32-bytes";
+    process.env.AGENT_CORE_DEMO_USER_ID = "demo-user-li";
+  });
+
   afterEach(() => {
     delete process.env.AGENT_CORE_URL;
+    delete process.env.AGENT_CORE_DEMO_USER_ID;
+    delete process.env.JWT_SECRET_KEY;
     vi.unstubAllGlobals();
   });
 
@@ -57,6 +64,9 @@ describe("GET /api/orders/[orderId]", () => {
       expect.objectContaining({
         method: "GET",
         cache: "no-store",
+        headers: expect.objectContaining({
+          authorization: expect.stringMatching(/^Bearer /),
+        }),
         signal: expect.any(AbortSignal),
       }),
     );
@@ -105,6 +115,36 @@ describe("GET /api/orders/[orderId]", () => {
 
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual({ error: { code, message: detail } });
+  });
+
+  it("maps authentication failures without exposing backend details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ detail: "访问令牌无效或已过期。internal-token=secret" }, 401),
+      ),
+    );
+
+    const response = await callRoute("order-demo-001");
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: { code: "order_unauthorized", message: "登录状态无效，请重新登录。" },
+    });
+  });
+
+  it("fails closed when server-side JWT configuration is missing", async () => {
+    delete process.env.JWT_SECRET_KEY;
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await callRoute("order-demo-001");
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: "order_auth_unavailable" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns a stable error when Agent Core is unreachable", async () => {

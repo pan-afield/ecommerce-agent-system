@@ -2,6 +2,8 @@ export const ORDER_ID_MAX_LENGTH = 100;
 
 export const PROXY_ORDER_ERROR_CODES = [
   "order_invalid_request",
+  "order_unauthorized",
+  "order_auth_unavailable",
   "order_not_found",
   "order_service_unavailable",
   "order_upstream_unreachable",

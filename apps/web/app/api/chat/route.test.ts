@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { POST } from "./route";
 
@@ -17,8 +17,15 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("POST /api/chat", () => {
+  beforeEach(() => {
+    process.env.JWT_SECRET_KEY = "test-only-jwt-secret-at-least-32-bytes";
+    process.env.AGENT_CORE_DEMO_USER_ID = "demo-user-li";
+  });
+
   afterEach(() => {
     delete process.env.AGENT_CORE_URL;
+    delete process.env.AGENT_CORE_DEMO_USER_ID;
+    delete process.env.JWT_SECRET_KEY;
     vi.unstubAllGlobals();
   });
 
@@ -42,7 +49,13 @@ describe("POST /api/chat", () => {
         method: "POST",
         body: JSON.stringify({ message: "你好" }),
         cache: "no-store",
+        headers: expect.objectContaining({
+          authorization: expect.stringMatching(/^Bearer /),
+        }),
       }),
+    );
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(
+      process.env.JWT_SECRET_KEY,
     );
   });
 
@@ -181,6 +194,39 @@ describe("POST /api/chat", () => {
     expect(await response.json()).toEqual({
       error: { code: "chat_rate_limited", message: "请求过于频繁，请稍后重试。" },
     });
+  });
+
+  it("maps authentication failures without exposing backend details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ detail: "访问令牌无效或已过期。internal-token=secret" }, 401),
+      ),
+    );
+
+    const response = await POST(createRequest(JSON.stringify({ message: "你好" })));
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      error: { code: "chat_unauthorized", message: "登录状态无效，请重新登录。" },
+    });
+  });
+
+  it("fails closed when server-side JWT configuration is missing", async () => {
+    delete process.env.JWT_SECRET_KEY;
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(createRequest(JSON.stringify({ message: "你好" })));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "chat_auth_unavailable",
+        message: "认证服务尚未配置，请联系管理员。",
+      },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns a stable proxy error when Agent Core is unreachable", async () => {
