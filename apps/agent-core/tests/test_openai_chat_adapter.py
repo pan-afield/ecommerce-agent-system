@@ -1,8 +1,9 @@
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from openai import (
     APITimeoutError,
@@ -80,6 +81,40 @@ async def test_openai_chat_adapter_generates_reply_with_system_and_user_messages
     assert len(messages) == 2
     assert messages[0] == SystemMessage(content=SYSTEM_PROMPT)
     assert messages[1] == HumanMessage(content="请问什么时候发货？")
+
+
+async def test_openai_chat_adapter_streams_non_empty_chunks_in_order() -> None:
+    chat_model = MagicMock()
+
+    async def fake_astream(
+        messages: list[SystemMessage | HumanMessage],
+    ) -> AsyncIterator[AIMessageChunk]:
+        assert messages[0] == SystemMessage(content=SYSTEM_PROMPT)
+        yield AIMessageChunk(content="订单")
+        yield AIMessageChunk(content="正在处理")
+        yield AIMessageChunk(content="")
+
+    chat_model.astream.side_effect = fake_astream
+
+    with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
+        adapter = OpenAIChatAdapter(
+            api_key=SecretStr("test-secret-key"),
+            model="gpt-test-model",
+            base_url=None,
+            reasoning_effort=None,
+            use_responses_api=True,
+            timeout_seconds=30.0,
+        )
+
+        chunks = [
+            chunk
+            async for chunk in adapter.stream_reply(
+                [HumanMessage(content="订单到哪里了？")]
+            )
+        ]
+
+    assert chunks == ["订单", "正在处理"]
+    chat_model.astream.assert_called_once()
 
 
 async def test_openai_chat_adapter_binds_tools_before_model_call() -> None:

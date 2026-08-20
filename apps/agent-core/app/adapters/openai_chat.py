@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -79,3 +79,28 @@ class OpenAIChatAdapter:
             raise ChatProviderUnavailableError("Chat provider is unavailable.") from error
 
         return response
+
+    async def stream_reply(
+        self,
+        messages: Sequence[AnyMessage],
+    ) -> AsyncIterator[str]:
+        try:
+            async for chunk in self._client.astream(
+                [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    *messages,
+                ]
+            ):
+                text = chunk.text
+                if text:
+                    yield text
+        except (AuthenticationError, PermissionDeniedError) as error:
+            raise ChatProviderAuthenticationError(
+                "Chat provider rejected the configured credentials."
+            ) from error
+        except RateLimitError as error:
+            raise ChatProviderRateLimitError("Chat provider rate limit was reached.") from error
+        except APITimeoutError as error:
+            raise ChatProviderTimeoutError("Chat provider request timed out.") from error
+        except OpenAIError as error:
+            raise ChatProviderUnavailableError("Chat provider is unavailable.") from error

@@ -92,6 +92,55 @@ async def test_chat_returns_assistant_response() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_returns_assistant_and_done_events() -> None:
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="订单正在配送中。",
+        model="test-model",
+    )
+    app = create_test_app(service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/stream",
+            json={"message": "订单到哪里了？"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+    assert response.text == (
+        'event: assistant\ndata: {"content": "订单正在配送中。", '
+        '"model": "test-model"}\n\n'
+        "event: done\ndata: {}\n\n"
+    )
+    service.reply.assert_awaited_once_with(
+        "订单到哪里了？",
+        "demo-user-li",
+        None,
+        request_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_requires_bearer_token_before_service_lookup() -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/stream",
+            json={"message": "订单到哪里了？"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "请先登录。"}
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_chat_forwards_normalized_thread_id() -> None:
     service = AsyncMock(spec=ChatService)
     service.reply.return_value = ChatResult(
