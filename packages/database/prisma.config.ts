@@ -16,10 +16,21 @@ config({
 });
 
 export default defineConfig({
+  experimental: {
+    externalTables: true,
+  },
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
     seed: "node prisma/seed.mjs",
+  },
+  tables: {
+    external: [
+      "public.checkpoint_blobs",
+      "public.checkpoint_migrations",
+      "public.checkpoint_writes",
+      "public.checkpoints",
+    ],
   },
   datasource: {
     url: process.env.DATABASE_URL,
