@@ -3,25 +3,102 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import TracebackType
 from typing import Self, cast
+from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import jwt
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.sql.elements import TextClause
 
-from app.api.routes.orders import load_owned_order
+from app.api.routes.orders import (
+    RefundApplicationPayload,
+    RefundApplicationResponse,
+    RefundAssessmentPayload,
+    load_owned_order,
+)
 from app.services.orders import (
     OrderDetailResponse,
     ShipmentEventResponse,
     fetch_owned_order,
 )
+from app.services.refund import RefundApplicationRecord
 
 DatabaseValue = str | Decimal | datetime | None
 DatabaseRow = dict[str, DatabaseValue]
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+
+
+def test_refund_assessment_payload_parses_decimal_and_normalizes_currency() -> None:
+    payload = RefundAssessmentPayload(
+        requested_amount="88.00",
+        requested_currency=" cny ",
+    )
+
+    assert payload.requested_amount == Decimal("88.00")
+    assert payload.requested_currency == "CNY"
+
+
+def test_refund_assessment_payload_leaves_amount_rule_to_service() -> None:
+    payload = RefundAssessmentPayload(
+        requested_amount="0",
+        requested_currency="CNY",
+    )
+
+    assert payload.requested_amount == Decimal("0")
+
+
+@pytest.mark.parametrize("currency", ["", "CN", "CNYX"])
+def test_refund_assessment_payload_rejects_invalid_currency_length(
+    currency: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        RefundAssessmentPayload(
+            requested_amount="88.00",
+            requested_currency=currency,
+        )
+
+
+def test_refund_application_payload_normalizes_id_and_currency() -> None:
+    payload = RefundApplicationPayload(
+        request_id=" refund-request-001 ",
+        requested_amount="88.00",
+        requested_currency=" cny ",
+    )
+
+    assert payload.request_id == "refund-request-001"
+    assert payload.requested_amount == Decimal("88.00")
+    assert payload.requested_currency == "CNY"
+
+
+@pytest.mark.parametrize("request_id", ["", "   ", "x" * 129])
+def test_refund_application_payload_rejects_invalid_request_id(
+    request_id: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        RefundApplicationPayload(
+            request_id=request_id,
+            requested_amount="88.00",
+            requested_currency="CNY",
+        )
+
+
+def test_refund_application_response_serializes_decimal_as_json_string() -> None:
+    response = RefundApplicationResponse(
+        id="refund-001",
+        order_id="order-demo-001",
+        request_id="refund-request-001",
+        requested_amount=Decimal("88.00"),
+        currency="CNY",
+        status="AWAITING_CUSTOMER_CONFIRMATION",
+        created=True,
+    )
+
+    assert response.model_dump(mode="json")["requested_amount"] == "88.00"
 
 
 def make_auth_headers(
@@ -204,6 +281,299 @@ async def test_order_route_returns_loaded_order(
         ],
     }
     assert "owner_id" not in response.json()
+
+
+@pytest.mark.asyncio
+async def test_refund_assessment_allows_owned_refundable_order(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    response = await client.post(
+        "/v1/orders/order-demo-001/refund-assessment",
+        json={
+            "requested_amount": "88.00",
+            "requested_currency": "cny",
+        },
+        headers=make_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "eligible_for_review": True,
+        "reason": "eligible_for_review",
+        "requires_customer_confirmation": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_refund_assessment_returns_stable_rejection_reason(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    response = await client.post(
+        "/v1/orders/order-demo-001/refund-assessment",
+        json={
+            "requested_amount": "299.01",
+            "requested_currency": "CNY",
+        },
+        headers=make_auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "eligible_for_review": False,
+        "reason": "amount_exceeds_order_total",
+        "requires_customer_confirmation": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_refund_assessment_hides_unavailable_order(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = lambda: None
+
+    response = await client.post(
+        "/v1/orders/order-demo-002/refund-assessment",
+        json={
+            "requested_amount": "88.00",
+            "requested_currency": "CNY",
+        },
+        headers=make_auth_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "订单不存在。"}
+
+
+@pytest.mark.asyncio
+async def test_refund_assessment_requires_bearer_token(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    response = await client.post(
+        "/v1/orders/order-demo-001/refund-assessment",
+        json={
+            "requested_amount": "88.00",
+            "requested_currency": "CNY",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "请先登录。"}
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_creates_waiting_confirmation_record(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+    fixed_id = UUID("00000000-0000-0000-0000-000000000001")
+
+    with (
+        patch(
+            "app.api.routes.orders.try_create_refund_application",
+            new=AsyncMock(return_value=True),
+        ) as create_application,
+        patch("app.api.routes.orders.uuid4", return_value=fixed_id),
+    ):
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": " refund-request-001 ",
+                "requested_amount": "88.00",
+                "requested_currency": "cny",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": str(fixed_id),
+        "order_id": "order-demo-001",
+        "request_id": "refund-request-001",
+        "requested_amount": "88.00",
+        "currency": "CNY",
+        "status": "AWAITING_CUSTOMER_CONFIRMATION",
+        "created": True,
+    }
+    create_application.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_reuses_matching_request(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+    existing = RefundApplicationRecord(
+        id="refund-existing-001",
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+        request_id="refund-request-001",
+        requested_amount=Decimal("88.00"),
+        currency="CNY",
+        status="PENDING_MANUAL_APPROVAL",
+    )
+
+    with (
+        patch(
+            "app.api.routes.orders.try_create_refund_application",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.api.routes.orders.fetch_refund_application_by_request_id",
+            new=AsyncMock(return_value=existing),
+        ),
+    ):
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": "refund-request-001",
+                "requested_amount": "88.00",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "refund-existing-001"
+    assert response.json()["status"] == "PENDING_MANUAL_APPROVAL"
+    assert response.json()["created"] is False
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_rejects_reused_key_with_new_payload(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+    existing = RefundApplicationRecord(
+        id="refund-existing-001",
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+        request_id="refund-request-001",
+        requested_amount=Decimal("99.00"),
+        currency="CNY",
+        status="AWAITING_CUSTOMER_CONFIRMATION",
+    )
+
+    with (
+        patch(
+            "app.api.routes.orders.try_create_refund_application",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.api.routes.orders.fetch_refund_application_by_request_id",
+            new=AsyncMock(return_value=existing),
+        ),
+    ):
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": "refund-request-001",
+                "requested_amount": "88.00",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "退款请求幂等键已用于其他申请。"}
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_does_not_write_rejected_request(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    with patch(
+        "app.api.routes.orders.try_create_refund_application",
+        new=AsyncMock(),
+    ) as create_application:
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": "refund-request-001",
+                "requested_amount": "299.01",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "amount_exceeds_order_total"}
+    create_application.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_hides_unavailable_order(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = lambda: None
+
+    with patch(
+        "app.api.routes.orders.try_create_refund_application",
+        new=AsyncMock(),
+    ) as create_application:
+        response = await client.post(
+            "/v1/orders/order-demo-002/refund-applications",
+            json={
+                "request_id": "refund-request-001",
+                "requested_amount": "88.00",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "订单不存在。"}
+    create_application.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_application_sanitizes_database_failure(
+    client: AsyncClient,
+    app: FastAPI,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    with (
+        patch(
+            "app.api.routes.orders.try_create_refund_application",
+            new=AsyncMock(
+                side_effect=SQLAlchemyError("sensitive refund database detail")
+            ),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": "refund-request-001",
+                "requested_amount": "88.00",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
+    assert "sensitive refund database detail" not in response.text
+    assert "sensitive refund database detail" not in caplog.text
+    assert "SQLAlchemyError" in caplog.text
 
 
 @pytest.mark.asyncio

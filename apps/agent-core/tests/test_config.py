@@ -64,6 +64,37 @@ def test_settings_reject_short_jwt_secret(
         Settings(_env_file=None)
 
 
+def test_settings_load_refund_approver_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFUND_APPROVER_USER_ID", "staff-zhang")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_approver_user_id == "staff-zhang"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n\t"])
+def test_settings_treat_blank_refund_approver_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("REFUND_APPROVER_USER_ID", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_approver_user_id is None
+
+
+def test_settings_reject_overlong_refund_approver_user_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFUND_APPROVER_USER_ID", "x" * 65)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test")

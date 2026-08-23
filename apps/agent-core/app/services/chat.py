@@ -76,6 +76,7 @@ class ChatService:
             order_tools=order_tools,
         )
         self._model_name = model_name
+        # 上协程锁
         self._checkpoint_lock = asyncio.Lock()
 
     async def reply(

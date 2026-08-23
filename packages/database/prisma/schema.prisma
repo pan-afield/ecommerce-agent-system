@@ -14,28 +14,59 @@ enum OrderStatus {
   CANCELLED
 }
 
+enum RefundStatus {
+  AWAITING_CUSTOMER_CONFIRMATION
+  PENDING_MANUAL_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+model RefundApplication {
+  id               String       @id @db.VarChar(64)
+  userId           String       @map("user_id") @db.VarChar(64)
+  orderId          String       @map("order_id") @db.VarChar(64)
+  requestId        String       @map("request_id") @db.VarChar(128)
+  requestedAmount  Decimal      @map("requested_amount") @db.Decimal(12, 2)
+  currency         String       @db.Char(3)
+  status           RefundStatus
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  confirmedAt      DateTime?    @map("confirmed_at") @db.Timestamptz(3)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  order            Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  reviewedByUserId String?      @map("reviewed_by_user_id") @db.VarChar(64)
+  reviewedAt       DateTime?    @map("reviewed_at") @db.Timestamptz(3)
+  reviewNote       String?      @map("review_note") @db.VarChar(500)
+
+  @@unique([userId, requestId])
+  @@index([orderId])
+  @@map("refund_applications")
+}
+
 model User {
-  id        String   @id @db.VarChar(64)
-  name      String   @db.VarChar(100)
-  email     String   @unique @db.VarChar(255)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
-  orders    Order[]
+  id                 String              @id @db.VarChar(64)
+  name               String              @db.VarChar(100)
+  email              String              @unique @db.VarChar(255)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  orders             Order[]
+  refundApplications RefundApplication[]
 
   @@map("users")
 }
 
 model Order {
-  id             String          @id @db.VarChar(64)
-  userId         String          @map("user_id") @db.VarChar(64)
-  orderNumber    String          @unique @map("order_number") @db.VarChar(32)
-  status         OrderStatus
-  totalAmount    Decimal         @map("total_amount") @db.Decimal(12, 2)
-  currency       String          @default("CNY") @db.Char(3)
-  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
-  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
-  shipmentEvents ShipmentEvent[]
+  id                 String              @id @db.VarChar(64)
+  userId             String              @map("user_id") @db.VarChar(64)
+  orderNumber        String              @unique @map("order_number") @db.VarChar(32)
+  status             OrderStatus
+  totalAmount        Decimal             @map("total_amount") @db.Decimal(12, 2)
+  currency           String              @default("CNY") @db.Char(3)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  user               User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  shipmentEvents     ShipmentEvent[]
+  refundApplications RefundApplication[]
 
   @@index([userId])
   @@map("orders")

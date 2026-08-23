@@ -62,6 +62,7 @@ class Settings(BaseSettings):
         "openai_base_url",
         "openai_reasoning_effort",
         "jwt_secret_key",
+        "refund_approver_user_id",
         mode="before",
     )
     @classmethod
@@ -86,6 +87,13 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="JWT_SECRET_KEY",
         min_length=32,
+    )
+
+    refund_approver_user_id: str | None = Field(
+        default=None,
+        validation_alias="REFUND_APPROVER_USER_ID",
+        min_length=1,
+        max_length=64,
     )
 
 

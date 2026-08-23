@@ -69,3 +69,24 @@ def get_current_user_id(
         )
 
     return user_id
+
+
+def get_current_refund_approver_id(
+    request: Request,
+    current_user_id: Annotated[str, Depends(get_current_user_id)],
+) -> str:
+    settings = cast(Settings, request.app.state.settings)
+
+    if settings.refund_approver_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="退款审批服务尚未配置。",
+        )
+
+    if current_user_id != settings.refund_approver_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权审批退款申请。",
+        )
+
+    return current_user_id
