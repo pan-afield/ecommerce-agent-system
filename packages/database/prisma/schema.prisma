@@ -21,6 +21,8 @@ enum RefundStatus {
   REJECTED
 }
 
+/// The partial unique index for one non-rejected application per user/order
+/// is owned by migration 20260824090000_enforce_single_non_rejected_refund.
 model RefundApplication {
   id               String       @id @db.VarChar(64)
   userId           String       @map("user_id") @db.VarChar(64)

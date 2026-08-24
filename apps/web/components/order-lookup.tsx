@@ -16,6 +16,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { OrderDetailCard } from "@/components/order-detail-card";
+import { RefundFlow } from "@/components/refund-flow";
 import { getOrder, OrderApiError } from "@/lib/order-api";
 import {
   ORDER_ID_MAX_LENGTH,
@@ -36,7 +37,11 @@ function normalizeOrderError(error: unknown): OrderErrorDetail {
   };
 }
 
-export function OrderLookup() {
+interface OrderLookupProps {
+  approvalDemoEnabled?: boolean;
+}
+
+export function OrderLookup({ approvalDemoEnabled = false }: OrderLookupProps) {
   const [orderId, setOrderId] = useState(DEMO_ORDER_ID);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [lastSubmittedOrderId, setLastSubmittedOrderId] = useState(DEMO_ORDER_ID);
@@ -158,13 +163,23 @@ export function OrderLookup() {
           )}
 
           {!activeOrderId && order && (
-            <OrderDetailCard
-              key={order.id}
-              order={order}
-              reduceMotion={shouldReduceMotion}
-            />
+            <div key={order.id}>
+              <OrderDetailCard order={order} reduceMotion={shouldReduceMotion} />
+              <RefundFlow
+                approvalDemoEnabled={approvalDemoEnabled}
+                order={order}
+                reduceMotion={shouldReduceMotion}
+              />
+            </div>
           )}
         </AnimatePresence>
+        {!activeOrderId && !order && (
+          <RefundFlow
+            approvalDemoEnabled={approvalDemoEnabled}
+            order={null}
+            reduceMotion={shouldReduceMotion}
+          />
+        )}
       </div>
     </section>
   );

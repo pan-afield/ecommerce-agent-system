@@ -451,6 +451,61 @@ async def test_submit_refund_application_reuses_matching_request(
 
 
 @pytest.mark.asyncio
+async def test_submit_refund_application_returns_existing_order_application(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+    existing = RefundApplicationRecord(
+        id="refund-existing-001",
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+        request_id="original-refund-request",
+        requested_amount=Decimal("66.00"),
+        currency="CNY",
+        status="APPROVED",
+    )
+
+    with (
+        patch(
+            "app.api.routes.orders.try_create_refund_application",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "app.api.routes.orders.fetch_refund_application_by_request_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+            new=AsyncMock(return_value=existing),
+        ) as fetch_by_order,
+    ):
+        response = await client.post(
+            "/v1/orders/order-demo-001/refund-applications",
+            json={
+                "request_id": "new-refund-request",
+                "requested_amount": "88.00",
+                "requested_currency": "CNY",
+            },
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "refund-existing-001",
+        "order_id": "order-demo-001",
+        "request_id": "original-refund-request",
+        "requested_amount": "66.00",
+        "currency": "CNY",
+        "status": "APPROVED",
+        "created": False,
+    }
+    assert fetch_by_order.await_args is not None
+    assert fetch_by_order.await_args.kwargs["user_id"] == "demo-user-li"
+    assert fetch_by_order.await_args.kwargs["order_id"] == "order-demo-001"
+
+
+@pytest.mark.asyncio
 async def test_submit_refund_application_rejects_reused_key_with_new_payload(
     client: AsyncClient,
     app: FastAPI,
@@ -573,6 +628,133 @@ async def test_submit_refund_application_sanitizes_database_failure(
     assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
     assert "sensitive refund database detail" not in response.text
     assert "sensitive refund database detail" not in caplog.text
+    assert "SQLAlchemyError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_current_refund_application_returns_owned_non_rejected_record(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+    existing = RefundApplicationRecord(
+        id="refund-existing-001",
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+        request_id="refund-request-001",
+        requested_amount=Decimal("88.00"),
+        currency="CNY",
+        status="PENDING_MANUAL_APPROVAL",
+    )
+
+    with patch(
+        "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+        new=AsyncMock(return_value=existing),
+    ) as fetch_application:
+        response = await client.get(
+            "/v1/orders/order-demo-001/refund-application",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "refund-existing-001",
+        "order_id": "order-demo-001",
+        "request_id": "refund-request-001",
+        "requested_amount": "88.00",
+        "currency": "CNY",
+        "status": "PENDING_MANUAL_APPROVAL",
+    }
+    assert fetch_application.await_args is not None
+    assert fetch_application.await_args.kwargs["user_id"] == "demo-user-li"
+    assert fetch_application.await_args.kwargs["order_id"] == "order-demo-001"
+
+
+@pytest.mark.asyncio
+async def test_current_refund_application_returns_404_when_none_exists(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    with patch(
+        "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+        new=AsyncMock(return_value=None),
+    ):
+        response = await client.get(
+            "/v1/orders/order-demo-001/refund-application",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "退款申请不存在。"}
+
+
+@pytest.mark.asyncio
+async def test_current_refund_application_hides_unavailable_order(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = lambda: None
+
+    with patch(
+        "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+        new=AsyncMock(),
+    ) as fetch_application:
+        response = await client.get(
+            "/v1/orders/order-demo-002/refund-application",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "订单不存在。"}
+    fetch_application.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_current_refund_application_requires_authentication(
+    client: AsyncClient,
+    app: FastAPI,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    with patch(
+        "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+        new=AsyncMock(),
+    ) as fetch_application:
+        response = await client.get(
+            "/v1/orders/order-demo-001/refund-application"
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "请先登录。"}
+    fetch_application.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_current_refund_application_sanitizes_database_failure(
+    client: AsyncClient,
+    app: FastAPI,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app.dependency_overrides[load_owned_order] = make_order_detail
+
+    with (
+        patch(
+            "app.api.routes.orders.fetch_non_rejected_refund_application_by_order",
+            new=AsyncMock(side_effect=SQLAlchemyError("sensitive current refund detail")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.get(
+            "/v1/orders/order-demo-001/refund-application",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
+    assert "sensitive current refund detail" not in response.text
+    assert "sensitive current refund detail" not in caplog.text
     assert "SQLAlchemyError" in caplog.text
 
 

@@ -2,12 +2,17 @@ import { createHmac } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAgentCoreAuthorization } from "./server-auth";
+import {
+  createAgentCoreApproverAuthorization,
+  createAgentCoreAuthorization,
+} from "./server-auth";
 
 describe("createAgentCoreAuthorization", () => {
   afterEach(() => {
     delete process.env.AGENT_CORE_DEMO_USER_ID;
+    delete process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED;
     delete process.env.JWT_SECRET_KEY;
+    delete process.env.REFUND_APPROVER_USER_ID;
   });
 
   it("creates a short-lived HS256 token for the configured demo identity", () => {
@@ -43,5 +48,32 @@ describe("createAgentCoreAuthorization", () => {
 
     process.env.JWT_SECRET_KEY = "too-short";
     expect(createAgentCoreAuthorization()).toBeNull();
+  });
+
+  it("uses the configured approver identity only for review tokens", () => {
+    process.env.JWT_SECRET_KEY = "test-only-jwt-secret-at-least-32-bytes";
+    process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED = "true";
+    process.env.REFUND_APPROVER_USER_ID = "staff-zhang";
+
+    const authorization = createAgentCoreApproverAuthorization(1_800_000);
+    const payload = authorization?.split(".")[1] ?? "";
+
+    expect(JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))).toMatchObject({
+      sub: "staff-zhang",
+    });
+  });
+
+  it("does not issue an approver token when the role is unconfigured", () => {
+    process.env.JWT_SECRET_KEY = "test-only-jwt-secret-at-least-32-bytes";
+    process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED = "true";
+
+    expect(createAgentCoreApproverAuthorization()).toBeNull();
+  });
+
+  it("keeps browser-triggered demo approval disabled by default", () => {
+    process.env.JWT_SECRET_KEY = "test-only-jwt-secret-at-least-32-bytes";
+    process.env.REFUND_APPROVER_USER_ID = "staff-zhang";
+
+    expect(createAgentCoreApproverAuthorization()).toBeNull();
   });
 });

@@ -4,10 +4,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { OrderDetail } from "@/types/order";
 
-const { getOrderMock, useReducedMotionMock } = vi.hoisted(() => ({
+const { getCurrentRefundMock, getOrderMock, useReducedMotionMock } = vi.hoisted(() => ({
+  getCurrentRefundMock: vi.fn(),
   getOrderMock: vi.fn(),
   useReducedMotionMock: vi.fn(),
 }));
+
+vi.mock("@/lib/refund-api", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, getCurrentRefundApplication: getCurrentRefundMock };
+});
 
 vi.mock("@/lib/order-api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -50,6 +56,8 @@ const orderFixture: OrderDetail = {
 
 describe("OrderLookup", () => {
   beforeEach(() => {
+    getCurrentRefundMock.mockReset();
+    getCurrentRefundMock.mockResolvedValue(null);
     getOrderMock.mockReset();
     useReducedMotionMock.mockReset();
     useReducedMotionMock.mockReturnValue(false);

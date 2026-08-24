@@ -130,7 +130,7 @@ async def try_create_refund_application(
             :currency,
             'AWAITING_CUSTOMER_CONFIRMATION'
         )
-        ON CONFLICT (user_id, request_id) DO NOTHING
+        ON CONFLICT DO NOTHING
         RETURNING id
         """
     )
@@ -361,6 +361,59 @@ async def fetch_refund_application_by_id(
             statement,
             {
                 "application_id": application_id,
+            },
+        )
+        row = result.mappings().one_or_none()
+
+    if row is None:
+        return None
+
+    return RefundApplicationRecord(
+        id=row["id"],
+        user_id=row["user_id"],
+        order_id=row["order_id"],
+        request_id=row["request_id"],
+        requested_amount=row["requested_amount"],
+        currency=row["currency"],
+        status=row["status"],
+        reviewed_by_user_id=row["reviewed_by_user_id"],
+        reviewed_at=row["reviewed_at"],
+        review_note=row["review_note"],
+    )
+
+
+async def fetch_non_rejected_refund_application_by_order(
+    engine: AsyncEngine,
+    *,
+    user_id: str,
+    order_id: str,
+) -> RefundApplicationRecord | None:
+    statement = text(
+        """
+        SELECT
+            id,
+            user_id,
+            order_id,
+            request_id,
+            requested_amount,
+            currency,
+            status::text AS status,
+            reviewed_by_user_id,
+            reviewed_at,
+            review_note
+        FROM refund_applications
+        WHERE user_id = :user_id
+          AND order_id = :order_id
+          AND status != 'REJECTED'
+        """
+    )
+
+    async with engine.connect() as connection:
+        result = await connection.execute(
+            statement,
+            {
+                "user_id": user_id,
+                "order_id": order_id,
             },
         )
         row = result.mappings().one_or_none()

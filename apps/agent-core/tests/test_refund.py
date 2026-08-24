@@ -17,6 +17,7 @@ from app.services.refund import (
     assess_refund,
     build_refund_request,
     confirm_refund_application,
+    fetch_non_rejected_refund_application_by_order,
     fetch_refund_application_by_id,
     fetch_refund_application_by_request_id,
     matches_existing_refund_application,
@@ -258,7 +259,7 @@ async def test_try_create_refund_application_uses_atomic_idempotent_insert(
     assert fake_engine.transaction.exited is True
     assert fake_engine.connection.execution is not None
     statement, parameters = fake_engine.connection.execution
-    assert "ON CONFLICT (user_id, request_id) DO NOTHING" in str(statement)
+    assert "ON CONFLICT DO NOTHING" in str(statement)
     assert "RETURNING id" in str(statement)
     assert parameters == {
         "id": "refund-001",
@@ -357,6 +358,57 @@ async def test_fetch_refund_application_by_id_returns_none_when_missing() -> Non
     result = await fetch_refund_application_by_id(
         cast(AsyncEngine, fake_engine),
         application_id="refund-missing",
+    )
+
+    assert result is None
+
+
+async def test_fetch_non_rejected_refund_application_scopes_order_to_user() -> None:
+    reviewed_at = datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
+    fake_engine = FakeRefundReadEngine(
+        {
+            "id": "refund-001",
+            "user_id": "demo-user-li",
+            "order_id": "order-demo-001",
+            "request_id": "refund-request-001",
+            "requested_amount": Decimal("88.00"),
+            "currency": "CNY",
+            "status": "APPROVED",
+            "reviewed_by_user_id": "staff-zhang",
+            "reviewed_at": reviewed_at,
+            "review_note": "已人工核对。",
+        }
+    )
+
+    result = await fetch_non_rejected_refund_application_by_order(
+        cast(AsyncEngine, fake_engine),
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+    )
+
+    assert result is not None
+    assert result.id == "refund-001"
+    assert result.status == "APPROVED"
+    assert result.reviewed_at == reviewed_at
+    assert fake_engine.connection.execution is not None
+    statement, parameters = fake_engine.connection.execution
+    sql = str(statement)
+    assert "user_id = :user_id" in sql
+    assert "order_id = :order_id" in sql
+    assert "status != 'REJECTED'" in sql
+    assert parameters == {
+        "user_id": "demo-user-li",
+        "order_id": "order-demo-001",
+    }
+
+
+async def test_fetch_non_rejected_refund_application_returns_none_when_missing() -> None:
+    fake_engine = FakeRefundReadEngine(None)
+
+    result = await fetch_non_rejected_refund_application_by_order(
+        cast(AsyncEngine, fake_engine),
+        user_id="demo-user-li",
+        order_id="order-demo-001",
     )
 
     assert result is None

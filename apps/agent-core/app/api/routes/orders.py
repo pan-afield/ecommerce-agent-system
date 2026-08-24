@@ -15,6 +15,7 @@ from app.services.refund import (
     RefundOrderSnapshot,
     assess_refund,
     build_refund_request,
+    fetch_non_rejected_refund_application_by_order,
     fetch_refund_application_by_request_id,
     matches_existing_refund_application,
     try_create_refund_application,
@@ -254,28 +255,34 @@ async def submit_refund_application(
                 request_id=payload.request_id,
             )
             if existing is None:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="退款服务暂时不可用，请稍后重试。",
+                # request_id 不同：说明可能命中了同订单非拒绝申请约束。
+                existing = await fetch_non_rejected_refund_application_by_order(
+                    engine,
+                    user_id=current_user_id,
+                    order_id=order_id,
                 )
-            else:
-                if matches_existing_refund_application(existing, application) is False:
-                    # 同一幂等键对应了不同申请参数，拒绝覆盖原申请。
+
+                if existing is None:
+                    # INSERT 报告冲突，但两种查询都找不到记录，属于异常状态。
                     raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="退款请求幂等键已用于其他申请。",
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="退款服务暂时不可用，请稍后重试。",
                     )
-                else:
-                    # 参数一致，返回原申请，保证重复请求具有幂等结果。
-                    return RefundApplicationResponse(
-                        id=existing.id,
-                        order_id=existing.order_id,
-                        request_id=existing.request_id,
-                        requested_amount=existing.requested_amount,
-                        currency=existing.currency,
-                        status=existing.status,
-                        created=False,
-                    )
+            elif not matches_existing_refund_application(existing, application):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="退款请求幂等键已用于其他申请。",
+                )
+            # 参数一致，返回原申请，保证重复请求具有幂等结果。
+            return RefundApplicationResponse(
+                id=existing.id,
+                order_id=existing.order_id,
+                request_id=existing.request_id,
+                requested_amount=existing.requested_amount,
+                currency=existing.currency,
+                status=existing.status,
+                created=False,
+            )
 
     except SQLAlchemyError as error:
         # 第六步：将数据库异常转换为统一的服务不可用响应。
@@ -287,3 +294,66 @@ async def submit_refund_application(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="退款服务暂时不可用，请稍后重试。",
         ) from error
+
+
+class CurrentRefundApplicationResponse(BaseModel):
+    id: str
+    order_id: str
+    request_id: str
+    requested_amount: Decimal
+    currency: str
+    status: str
+
+
+@router.get(
+    "/{order_id}/refund-application",
+    response_model=CurrentRefundApplicationResponse,
+)
+async def get_current_refund_application(
+    order_id: str,
+    request: Request,
+    current_user_id: Annotated[str, Depends(get_current_user_id)],
+    order: Annotated[
+        OrderDetailResponse | None,
+        Depends(load_owned_order),
+    ],
+) -> CurrentRefundApplicationResponse:
+    if order is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="订单不存在。",
+        )
+
+    engine = cast(AsyncEngine, request.app.state.database_engine)
+
+    try:
+        application = await fetch_non_rejected_refund_application_by_order(
+            engine,
+            user_id=current_user_id,
+            order_id=order_id,
+        )
+
+    except SQLAlchemyError as error:
+        logger.warning(
+            "Refund application database query failed: error_type=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="退款服务暂时不可用，请稍后重试。",
+        ) from error
+
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="退款申请不存在。",
+        )
+
+    return CurrentRefundApplicationResponse(
+        id=application.id,
+        order_id=application.order_id,
+        request_id=application.request_id,
+        requested_amount=application.requested_amount,
+        currency=application.currency,
+        status=application.status,
+    )

@@ -7,13 +7,12 @@ function encodeBase64Url(value: string) {
   return Buffer.from(value, "utf8").toString("base64url");
 }
 
-export function createAgentCoreAuthorization(now = Date.now()) {
+function createAuthorization(userId: string, now: number) {
   const secret = process.env.JWT_SECRET_KEY?.trim();
   if (!secret || secret.length < 32) {
     return null;
   }
 
-  const userId = process.env.AGENT_CORE_DEMO_USER_ID?.trim() || DEFAULT_DEMO_USER_ID;
   const issuedAt = Math.floor(now / 1_000);
   const encodedHeader = encodeBase64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const encodedPayload = encodeBase64Url(
@@ -29,4 +28,22 @@ export function createAgentCoreAuthorization(now = Date.now()) {
     .digest("base64url");
 
   return `Bearer ${unsignedToken}.${signature}`;
+}
+
+export function createAgentCoreAuthorization(now = Date.now()) {
+  const userId = process.env.AGENT_CORE_DEMO_USER_ID?.trim() || DEFAULT_DEMO_USER_ID;
+  return createAuthorization(userId, now);
+}
+
+export function createAgentCoreApproverAuthorization(now = Date.now()) {
+  if (process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED !== "true") {
+    return null;
+  }
+
+  const approverId = process.env.REFUND_APPROVER_USER_ID?.trim();
+  if (!approverId) {
+    return null;
+  }
+
+  return createAuthorization(approverId, now);
 }

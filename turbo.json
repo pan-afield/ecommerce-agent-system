@@ -2,9 +2,11 @@
   "$schema": "https://turbo.build/schema.json",
   "globalPassThroughEnv": [
     "AGENT_CORE_DEMO_USER_ID",
+    "AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED",
     "AGENT_CORE_URL",
     "JWT_SECRET_KEY",
-    "PYTHON_BIN"
+    "PYTHON_BIN",
+    "REFUND_APPROVER_USER_ID"
   ],
   "tasks": {
     "build": {
