@@ -30,19 +30,23 @@ GenerateReply = Callable[
 ]
 
 
+# 根据是否存在待处理意图，决定开始新订单流程还是继续当前流程。
 def route_intent(
     state: SupportState,
 ) -> Literal["general", "order_start", "order_continue"]:
     if state.get("pending_intent") == "order":
         return "order_continue"
 
-    message = state["normalized_message"]
+    message = state.get("normalized_message")
+    if message is None:
+        raise ValueError("normalized_message must be set before routing intent")
     if any(keyword in message for keyword in ("订单", "物流", "快递", "包裹")):
         return "order_start"
 
     return "general"
 
 
+# 清理用户输入，并将本轮消息写入 LangGraph 消息列表。
 def normalize_message(
     state: SupportState,
 ) -> dict[str, str | list[AnyMessage]]:
@@ -60,6 +64,7 @@ def normalize_message(
     }
 
 
+# 根据 request_id 判断请求是否已经完成，避免重复调用模型或工具。
 def route_request(
     state: SupportState,
 ) -> Literal["new", "completed"]:
@@ -72,6 +77,7 @@ def route_request(
     return "new"
 
 
+# 直接返回已完成请求的历史结果，实现请求级幂等。
 def reuse_completed_response(
     state: SupportState,
 ) -> dict[str, str]:
@@ -84,6 +90,7 @@ def reuse_completed_response(
     }
 
 
+# 缺少订单编号时先向用户追问，并记录待继续的订单意图。
 def request_order_identifier(
     state: SupportState,
 ) -> dict[str, str | list[AnyMessage] | dict[str, str]]:
@@ -103,10 +110,15 @@ def request_order_identifier(
     return update
 
 
+# 检查模型最后一条消息是否包含工具调用，决定结束流程还是执行工具。
 def route_order_action(
     state: SupportState,
 ) -> Literal["tools", "done"]:
-    last_message = state["messages"][-1]
+    messages = state.get("messages")
+    if not messages:
+        raise ValueError("messages must contain at least one message before routing")
+
+    last_message = messages[-1]
 
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tools"
@@ -114,20 +126,26 @@ def route_order_action(
     return "done"
 
 
+# 构建客服状态图，并连接普通问答、订单查询和工具调用流程。
 def build_support_graph(
     generate_reply: GenerateReply,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     *,
     order_tools: Sequence[BaseTool] = (),
 ) -> CompiledStateGraph[SupportState, None, Any, Any]:
+    # 普通问题只调用模型一次，并缓存带 request_id 的最终回复。
     async def generate_response(
         state: SupportState,
     ) -> dict[
         str,
         str | list[AnyMessage] | dict[str, str],
     ]:
+        messages = state.get("messages")
+        if messages is None:
+            raise ValueError("messages must be set before generating a response")
+
         response_message = await generate_reply(
-            state["messages"],
+            messages,
             None,
         )
         response = response_message.text.strip()
@@ -152,11 +170,16 @@ def build_support_graph(
 
         return update
 
+    # 订单问题允许模型调用工具；工具完成后再次调用模型生成最终回复。
     async def generate_order_response(
         state: SupportState,
     ) -> dict[str, str | list[AnyMessage] | dict[str, str]]:
+        messages = state.get("messages")
+        if messages is None:
+            raise ValueError("messages must be set before generating an order response")
+
         response_message = await generate_reply(
-            state["messages"],
+            messages,
             order_tools,
         )
         response = response_message.text.strip()
@@ -178,6 +201,7 @@ def build_support_graph(
 
         return update
 
+    # 定义状态图节点和从请求入口开始的幂等分支。
     graph_builder = StateGraph(SupportState)
 
     graph_builder.add_conditional_edges(
@@ -238,6 +262,7 @@ def build_support_graph(
     )
     graph_builder.add_edge("order_tools", "generate_order_response")
 
+    # 编译图并注入可选检查点，使状态能够跨请求持久化。
     return graph_builder.compile(
         checkpointer=checkpointer,
     )
