@@ -8,6 +8,7 @@ import {
   type ChatResponse,
   type ChatStreamAssistantEvent,
 } from "@/types/chat";
+import { isRagSearchResponse } from "@/lib/rag-contract";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -22,7 +23,9 @@ export function isChatResponse(value: unknown): value is ChatResponse {
     typeof value.assistant.content === "string" &&
     value.assistant.content.length > 0 &&
     typeof value.model === "string" &&
-    value.model.length > 0
+    value.model.length > 0 &&
+    (value.citations === undefined ||
+      isRagSearchResponse({ query: "chat", citations: value.citations }))
   );
 }
 
@@ -34,7 +37,9 @@ export function isChatStreamAssistantEvent(
     typeof value.content === "string" &&
     value.content.length > 0 &&
     typeof value.model === "string" &&
-    value.model.length > 0
+    value.model.length > 0 &&
+    (value.citations === undefined ||
+      isRagSearchResponse({ query: "chat", citations: value.citations }))
   );
 }
 

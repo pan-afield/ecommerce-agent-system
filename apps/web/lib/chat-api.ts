@@ -206,7 +206,11 @@ export async function streamChatMessage(
       }
 
       if (assistant !== null) {
-        if (assistant.content === data.content && assistant.model === data.model) {
+        if (
+          assistant.content === data.content &&
+          assistant.model === data.model &&
+          JSON.stringify(assistant.citations ?? []) === JSON.stringify(data.citations ?? [])
+        ) {
           return;
         }
         throw invalidStreamError(response.status);
@@ -271,5 +275,8 @@ export async function streamChatMessage(
   return {
     assistant: { content: completedAssistant.content },
     model: completedAssistant.model,
+    ...(completedAssistant.citations === undefined
+      ? {}
+      : { citations: completedAssistant.citations }),
   };
 }

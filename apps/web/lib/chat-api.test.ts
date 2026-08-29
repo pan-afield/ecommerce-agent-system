@@ -130,6 +130,34 @@ describe("streamChatMessage", () => {
     );
   });
 
+  it("preserves citations in the final assistant event", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([
+          `event: assistant\ndata: ${JSON.stringify({
+            content: "退款需要订单本人提交。",
+            model: "test-model",
+            citations: [
+              {
+                source_id: "refund-policy-v1",
+                chunk_id: "a".repeat(64),
+                page_number: 2,
+                content: "退款需要订单本人提交。",
+                score: 0.25,
+              },
+            ],
+          })}\n\n`,
+          "event: done\ndata: {}\n\n",
+        ]),
+      ),
+    );
+
+    await expect(streamChatMessage({ message: "退款政策" })).resolves.toMatchObject({
+      citations: [expect.objectContaining({ source_id: "refund-policy-v1", page_number: 2 })],
+    });
+  });
+
   it("supports lone CR separators and ignores unknown heartbeat events", async () => {
     vi.stubGlobal(
       "fetch",

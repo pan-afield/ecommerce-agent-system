@@ -23,6 +23,8 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { OrderDetailCard } from "@/components/order-detail-card";
 import { OrderLookup } from "@/components/order-lookup";
+import { KnowledgeEvidence } from "@/components/knowledge-evidence";
+import { KnowledgeSearch } from "@/components/knowledge-search";
 import { ChatApiError, streamChatMessage } from "@/lib/chat-api";
 import {
   clearChatSession,
@@ -126,6 +128,12 @@ function ChatMessageItem({
               order={message.order}
               reduceMotion={reduceMotion}
             />
+          </div>
+        )}
+
+        {!isUser && message.citations && message.citations.length > 0 && (
+          <div className="w-full min-w-0">
+            <KnowledgeEvidence citations={message.citations} compact />
           </div>
         )}
 
@@ -255,6 +263,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
         role: "assistant",
         content: response.assistant.content,
         model: response.model,
+        ...(response.citations === undefined ? {} : { citations: response.citations }),
         ...(orderId === null ? {} : { orderId }),
         ...(order === undefined ? {} : { order }),
         state: "sent",
@@ -387,6 +396,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
       </header>
 
       <OrderLookup approvalDemoEnabled={approvalDemoEnabled} />
+      <KnowledgeSearch />
 
       <section className="min-h-0 flex-1 overflow-y-auto" aria-label="消息记录">
         {messages.length === 0 ? (

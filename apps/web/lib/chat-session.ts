@@ -1,5 +1,6 @@
 import { isChatErrorCode } from "@/lib/chat-contract";
 import { isOrderDetail } from "@/lib/order-contract";
+import { isRagSearchResponse } from "@/lib/rag-contract";
 import {
   CHAT_CONTEXT_ID_MAX_LENGTH,
   type LocalChatMessage,
@@ -53,6 +54,13 @@ function isStoredMessage(value: unknown): value is LocalChatMessage {
   }
 
   if (value.order !== undefined && !isOrderDetail(value.order)) {
+    return false;
+  }
+
+  if (
+    value.citations !== undefined &&
+    !isRagSearchResponse({ query: "stored", citations: value.citations })
+  ) {
     return false;
   }
 

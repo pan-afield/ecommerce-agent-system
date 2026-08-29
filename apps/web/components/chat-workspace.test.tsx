@@ -260,6 +260,32 @@ describe("ChatWorkspace", () => {
     );
   });
 
+  it("renders authoritative citations returned with a streamed assistant response", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock.mockResolvedValue({
+      assistant: { content: "根据知识库，退款需要订单本人提交。" },
+      model: "test-model",
+      citations: [
+        {
+          source_id: "refund-policy-v1",
+          chunk_id: "c".repeat(64),
+          page_number: 2,
+          content: "退款需要订单本人提交。",
+          score: 0.2,
+        },
+      ],
+    });
+    render(<ChatWorkspace />);
+
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "退款政策");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByRole("region", { name: "知识库证据" })).toHaveTextContent(
+      "refund-policy-v1",
+    );
+    expect(screen.getByText("根据知识库，退款需要订单本人提交。")).toBeInTheDocument();
+  });
+
   it("does not infer structured orders from assistant prose", async () => {
     const user = userEvent.setup();
     streamChatMessageMock.mockResolvedValue({

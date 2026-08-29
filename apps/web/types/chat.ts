@@ -1,4 +1,5 @@
 import type { OrderDetail } from "@/types/order";
+import type { KnowledgeCitation } from "@/types/rag";
 
 export const CHAT_MESSAGE_MAX_LENGTH = 2_000;
 export const CHAT_CONTEXT_ID_MAX_LENGTH = 128;
@@ -41,11 +42,13 @@ export interface ChatResponse {
     content: string;
   };
   model: string;
+  citations?: KnowledgeCitation[];
 }
 
 export interface ChatStreamAssistantEvent {
   content: string;
   model: string;
+  citations?: KnowledgeCitation[];
 }
 
 export type ChatStreamPhase = "connecting" | "processing" | "finalizing";
@@ -66,6 +69,7 @@ export interface LocalChatMessage {
   role: ChatRole;
   content: string;
   model?: string;
+  citations?: KnowledgeCitation[];
   orderId?: string;
   order?: OrderDetail;
   requestId?: string;

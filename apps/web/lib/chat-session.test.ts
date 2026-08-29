@@ -24,6 +24,15 @@ const sessionFixture: LocalChatSession = {
       role: "assistant",
       content: "您好",
       model: "test-model",
+      citations: [
+        {
+          source_id: "support-guide-v1",
+          chunk_id: "d".repeat(64),
+          page_number: null,
+          content: "您好。",
+          score: 0.1,
+        },
+      ],
       state: "sent",
     },
   ],
@@ -85,6 +94,18 @@ describe("chat session storage", () => {
       threadId: "thread-1",
       messages: [
         { id: "m-1", role: "user", content: "你好", state: "sent" },
+      ],
+    }),
+    JSON.stringify({
+      threadId: "thread-1",
+      messages: [
+        {
+          id: "m-1",
+          role: "assistant",
+          content: "伪造引用",
+          state: "sent",
+          citations: [{ source_id: "only" }],
+        },
       ],
     }),
     JSON.stringify({
