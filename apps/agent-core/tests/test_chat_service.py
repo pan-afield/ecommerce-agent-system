@@ -105,6 +105,79 @@ async def test_chat_service_returns_trimmed_reply_and_configured_model() -> None
     ]
 
 
+async def test_chat_service_passes_rag_prompt_to_graph_message() -> None:
+    chat_model = FakeChatModel(response="根据政策，退款需要订单本人提交。")
+    service = ChatService(chat_model=chat_model, model_name="gpt-test-model")
+    rag_prompt = (
+        "请根据以下企业知识库证据回答用户问题。\n\n"
+        "知识库证据：\n退款需要订单本人提交。\n\n"
+        "用户问题：\n退款政策"
+    )
+
+    await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        rag_prompt=rag_prompt,
+    )
+
+    assert chat_model.received_messages == [[("human", rag_prompt)]]
+
+
+async def test_chat_service_passes_rag_prompt_through_checkpointed_thread() -> None:
+    chat_model = FakeChatModel(response="根据政策，退款需要订单本人提交。")
+    checkpointer = InMemorySaver()
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        checkpointer=checkpointer,
+    )
+    rag_prompt = "知识库证据：退款需要订单本人提交。"
+
+    await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-with-rag",
+        rag_prompt=rag_prompt,
+    )
+
+    assert chat_model.received_messages == [[("human", rag_prompt)]]
+    checkpoint = await checkpointer.aget_tuple(
+        checkpoint_config("thread-with-rag")
+    )
+    assert checkpoint is not None
+    assert checkpoint.checkpoint["channel_values"]["rag_prompt"] == rag_prompt
+
+
+async def test_chat_service_does_not_reuse_rag_prompt_on_next_thread_request() -> None:
+    chat_model = FakeChatModel(response="收到。")
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        checkpointer=InMemorySaver(),
+    )
+
+    await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-rag-scope",
+        rag_prompt="证据 A",
+    )
+    await service.reply(
+        "客服营业时间是几点？",
+        user_id=TEST_USER_ID,
+        thread_id="thread-rag-scope",
+    )
+
+    assert chat_model.received_messages == [
+        [("human", "证据 A")],
+        [
+            ("human", "证据 A"),
+            ("ai", "收到。"),
+            ("human", "客服营业时间是几点？"),
+        ],
+    ]
+
+
 async def test_chat_service_calls_use_independent_graph_state() -> None:
     chat_model = FakeChatModel(response="收到。")
     service = ChatService(chat_model=chat_model, model_name="gpt-test-model")

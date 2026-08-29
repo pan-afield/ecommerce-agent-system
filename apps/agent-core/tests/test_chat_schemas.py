@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.chat import AssistantMessage, ChatRequest, ChatResponse
+from app.schemas.rag import KnowledgeCitationResponse
 
 
 def test_chat_request_strips_surrounding_whitespace() -> None:
@@ -82,4 +83,28 @@ def test_chat_response_serializes_assistant_content_and_model() -> None:
     assert response.model_dump() == {
         "assistant": {"content": "商品通常会尽快安排发货。"},
         "model": "gpt-test-model",
+        "citations": [],
     }
+
+
+def test_chat_response_uses_independent_empty_citation_lists() -> None:
+    first = ChatResponse(
+        assistant=AssistantMessage(content="回答一"),
+        model="gpt-test-model",
+    )
+    second = ChatResponse(
+        assistant=AssistantMessage(content="回答二"),
+        model="gpt-test-model",
+    )
+
+    first.citations.append(
+        KnowledgeCitationResponse(
+            source_id="policy.md",
+            chunk_id="chunk-1",
+            page_number=None,
+            content="证据",
+            score=1.0,
+        )
+    )
+
+    assert second.citations == []

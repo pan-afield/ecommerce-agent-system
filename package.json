@@ -5,6 +5,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "db:up": "docker compose up -d postgres",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:backend": "pnpm --filter @ecommerce-agent-system/agent-core test",

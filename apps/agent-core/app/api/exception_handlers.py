@@ -3,7 +3,7 @@ import logging
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 
-from app.schemas.error import ChatErrorCode, ErrorDetail, ErrorResponse
+from app.schemas.error import ApiErrorCode, ErrorDetail, ErrorResponse
 from app.services.chat import (
     ChatError,
     ChatNotConfiguredError,
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _map_chat_error(
     error: ChatError,
-) -> tuple[int, ChatErrorCode, str]:
+) -> tuple[int, ApiErrorCode, str]:
     if isinstance(error, ChatNotConfiguredError):
         return (
             status.HTTP_503_SERVICE_UNAVAILABLE,

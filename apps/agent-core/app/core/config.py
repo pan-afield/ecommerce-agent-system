@@ -96,6 +96,13 @@ class Settings(BaseSettings):
         max_length=64,
     )
 
+    openai_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        validation_alias="OPENAI_EMBEDDING_MODEL",
+        min_length=1,
+        max_length=100,
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

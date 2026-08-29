@@ -1,6 +1,8 @@
 from typing import Annotated, Self
 
-from pydantic import BaseModel, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
+
+from app.schemas.rag import KnowledgeCitationResponse
 
 ChatMessage = Annotated[
     str,
@@ -51,3 +53,4 @@ class AssistantMessage(BaseModel):
 class ChatResponse(BaseModel):
     assistant: AssistantMessage
     model: str
+    citations: list[KnowledgeCitationResponse] = Field(default_factory=list)

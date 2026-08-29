@@ -19,6 +19,7 @@ class SupportState(TypedDict):
     request_id: NotRequired[str | None]
     completed_requests: NotRequired[dict[str, str]]
     pending_intent: NotRequired[Literal["order"]]
+    rag_prompt: NotRequired[str | None]
 
 
 GenerateReply = Callable[
@@ -28,6 +29,16 @@ GenerateReply = Callable[
     ],
     Awaitable[AIMessage],
 ]
+
+
+def select_model_message(
+    normalized_message: str,
+    rag_prompt: str | None,
+) -> str:
+    message_content = normalized_message
+    if rag_prompt:
+        message_content = rag_prompt
+    return message_content
 
 
 # 根据是否存在待处理意图，决定开始新订单流程还是继续当前流程。
@@ -51,12 +62,13 @@ def normalize_message(
     state: SupportState,
 ) -> dict[str, str | list[AnyMessage]]:
     normalized_message = state["user_message"].strip()
+    message_content = select_model_message(normalized_message, state.get("rag_prompt"))
     request_id = state.get("request_id")
     message_id = f"request:{request_id}:human" if request_id is not None else None
     return {
         "messages": [
             HumanMessage(
-                content=normalized_message,
+                content=message_content,
                 id=message_id,
             )
         ],

@@ -25,9 +25,12 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
         patch("app.main.ChatService") as service_type,
         patch("app.main.AsyncPostgresSaver") as saver_type,
         patch("app.main.build_lookup_order_tool") as tool_builder,
+        patch("app.main.create_openai_embeddings") as embeddings_builder,
     ):
         fake_order_tool = MagicMock()
+        fake_embeddings = MagicMock()
         tool_builder.return_value = fake_order_tool
+        embeddings_builder.return_value = fake_embeddings
         saver_type.from_conn_string.return_value = checkpointer_context
         application = create_app(settings)
 
@@ -43,5 +46,7 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
     checkpointer_context.__aenter__.assert_awaited_once()
     checkpointer_context.__aexit__.assert_awaited_once()
     adapter_type.assert_called_once()
+    embeddings_builder.assert_called_once_with(settings)
+    assert application.state.rag_embeddings is fake_embeddings
     tool_builder.assert_called_once_with(application.state.database_engine)
     assert service_type.call_args.kwargs["order_tools"] == [fake_order_tool]

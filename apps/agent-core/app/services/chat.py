@@ -85,12 +85,13 @@ class ChatService:
         user_id: str,
         thread_id: str | None = None,
         request_id: str | None = None,
+        rag_prompt: str | None = None,
     ) -> ChatResult:
-
         initial_state: SupportState = {
             "user_id": user_id,
             "user_message": message,
             "request_id": request_id,
+            "rag_prompt": rag_prompt,
         }
         if thread_id is None:
             state = await self._stateless_graph.ainvoke(

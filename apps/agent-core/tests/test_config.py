@@ -99,6 +99,7 @@ def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test")
     monkeypatch.setenv("OPENAI_AGENT_MODEL", "gpt-test-model")
+    monkeypatch.setenv("OPENAI_EMBEDDING_MODEL", "text-embedding-test")
     monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
     monkeypatch.setenv("OPENAI_USE_RESPONSES_API", "true")
     monkeypatch.setenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "45")
@@ -110,6 +111,7 @@ def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> 
     assert str(settings.openai_api_key) == "**********"
     assert str(settings.openai_base_url) == "https://api.example.test/"
     assert settings.openai_agent_model == "gpt-test-model"
+    assert settings.openai_embedding_model == "text-embedding-test"
     assert settings.openai_reasoning_effort == "high"
     assert settings.openai_use_responses_api is True
     assert settings.openai_request_timeout_seconds == 45.0
@@ -122,6 +124,7 @@ def test_settings_allow_openai_to_be_unconfigured() -> None:
     assert settings.openai_base_url is None
     assert settings.openai_reasoning_effort is None
     assert settings.openai_agent_model == "gpt-4.1-mini"
+    assert settings.openai_embedding_model == "text-embedding-3-small"
     assert settings.openai_request_timeout_seconds == 30.0
 
 
@@ -150,6 +153,7 @@ def test_settings_treat_blank_optional_openai_values_as_unconfigured(
     [
         ("OPENAI_BASE_URL", "not-a-url"),
         ("OPENAI_AGENT_MODEL", ""),
+        ("OPENAI_EMBEDDING_MODEL", ""),
         ("OPENAI_REASONING_EFFORT", "extreme"),
         ("OPENAI_REQUEST_TIMEOUT_SECONDS", "0"),
         ("OPENAI_REQUEST_TIMEOUT_SECONDS", "121"),

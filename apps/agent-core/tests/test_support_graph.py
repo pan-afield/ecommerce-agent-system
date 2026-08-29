@@ -7,9 +7,30 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolRuntime
 
-from app.agents.support_graph import SupportState, build_support_graph, route_intent
+from app.agents.support_graph import (
+    SupportState,
+    build_support_graph,
+    normalize_message,
+    route_intent,
+    select_model_message,
+)
 
 TEST_USER_ID = "demo-user-li"
+
+
+@pytest.mark.parametrize(
+    ("rag_prompt", "expected"),
+    [
+        (None, "原始问题"),
+        ("", "原始问题"),
+        ("知识库证据：退款需要订单本人提交。", "知识库证据：退款需要订单本人提交。"),
+    ],
+)
+def test_select_model_message_prefers_non_empty_rag_prompt(
+    rag_prompt: str | None,
+    expected: str,
+) -> None:
+    assert select_model_message("原始问题", rag_prompt) == expected
 
 
 @tool
@@ -65,6 +86,45 @@ def test_route_intent_classifies_normalized_message(
     }
 
     assert route_intent(state) == expected_intent
+
+
+def test_normalize_message_keeps_original_text_without_rag_prompt() -> None:
+    result = normalize_message(
+        SupportState(
+            user_id=TEST_USER_ID,
+            user_message="  你们支持七天无理由吗？  ",
+        )
+    )
+
+    assert result["normalized_message"] == "你们支持七天无理由吗？"
+    messages = result["messages"]
+    assert isinstance(messages, list)
+    assert messages[0].text == "你们支持七天无理由吗？"
+
+
+def test_normalize_message_uses_rag_prompt_when_present() -> None:
+    rag_prompt = "知识库证据：\n退款需要订单本人提交。\n\n用户问题：\n退款政策"
+
+    result = normalize_message(
+        SupportState(
+            user_id=TEST_USER_ID,
+            user_message="退款政策",
+            rag_prompt=rag_prompt,
+        )
+    )
+
+    assert result["normalized_message"] == "退款政策"
+    messages = result["messages"]
+    assert isinstance(messages, list)
+    assert messages[0].text == rag_prompt
+    assert route_intent(
+        {
+            "user_id": TEST_USER_ID,
+            "user_message": "退款政策",
+            "normalized_message": "退款政策",
+            "rag_prompt": rag_prompt,
+        }
+    ) == "general"
 
 
 async def test_support_graph_passes_state_between_nodes() -> None:
