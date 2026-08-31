@@ -8,7 +8,7 @@ CREATE TABLE agent_core.knowledge_chunks (
     chunk_index INTEGER NOT NULL,
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    embedding vector(1536),
+    embedding vector(1024),
 
     CONSTRAINT knowledge_chunks_page_number_positive
         CHECK (page_number IS NULL OR page_number > 0),

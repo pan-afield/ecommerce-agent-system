@@ -1,9 +1,6 @@
 from dataclasses import dataclass
 from hashlib import sha256
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
-
 
 @dataclass(frozen=True)
 class KnowledgeChunk:
@@ -75,74 +72,3 @@ def chunk_policy_text(
         )
 
     return chunks
-
-
-STORE_KNOWLEDGE_CHUNK_STATEMENT = text(
-    """
-    INSERT INTO agent_core.knowledge_chunks (
-        chunk_id,
-        source_id,
-        page_number,
-        chunk_index,
-        content
-    )
-    VALUES (
-        :chunk_id,
-        :source_id,
-        :page_number,
-        :chunk_index,
-        :content
-    )
-    ON CONFLICT (chunk_id) DO NOTHING
-    RETURNING chunk_id
-    """
-)
-
-
-async def try_store_knowledge_chunk(
-    engine: AsyncEngine,
-    chunk: KnowledgeChunk,
-) -> bool:
-    """尝试插入一个知识块，重复的 ``chunk_id`` 不会重复写入。"""
-    async with engine.begin() as connection:
-        result = await connection.execute(
-            STORE_KNOWLEDGE_CHUNK_STATEMENT,
-            {
-                "chunk_id": chunk.chunk_id,
-                "source_id": chunk.source_id,
-                "page_number": chunk.page_number,
-                "chunk_index": chunk.chunk_index,
-                "content": chunk.content,
-            },
-        )
-
-    return result.scalar_one_or_none() is not None
-
-
-async def store_knowledge_chunks(
-    engine: AsyncEngine,
-    chunks: list[KnowledgeChunk],
-) -> int:
-    """在一个事务中批量插入知识块，并返回实际新增的数量。"""
-    if not chunks:
-        return 0
-
-    stored_count = 0
-
-    async with engine.begin() as connection:
-        for chunk in chunks:
-            result = await connection.execute(
-                STORE_KNOWLEDGE_CHUNK_STATEMENT,
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "source_id": chunk.source_id,
-                    "page_number": chunk.page_number,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content,
-                },
-            )
-
-            if result.scalar_one_or_none() is not None:
-                stored_count += 1
-
-    return stored_count

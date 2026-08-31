@@ -8,7 +8,9 @@ from fastapi.responses import StreamingResponse
 from app.api.dependencies import get_chat_service, get_current_user_id
 from app.api.serializers import format_citations
 from app.rag.citations import KnowledgeCitation
+from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import build_rag_context, build_rag_prompt
+from app.rag.vector_store import RagVectorDimensionError
 from app.schemas.chat import (
     AssistantMessage,
     ChatRequest,
@@ -27,18 +29,27 @@ async def _build_chat_rag_prompt(
     rag_prompt: str | None = None
     rag_embeddings = request.app.state.rag_embeddings
     database_engine = request.app.state.database_engine
+    embedding_model = request.app.state.settings.rag_embedding_model
     if rag_embeddings is not None:
         try:
             rag_context = await build_rag_context(
-                database_engine,
-                rag_embeddings,
-                message,
+                database_engine, rag_embeddings, message, embedding_model=embedding_model
             )
             rag_prompt = build_rag_prompt(
                 message,
                 rag_context.citations,
             )
             return rag_prompt, rag_context.citations
+        except RagEmbeddingError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="知识库向量服务暂时不可用。",
+            ) from error
+        except RagVectorDimensionError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="知识库向量数据库配置不兼容。",
+            ) from error
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

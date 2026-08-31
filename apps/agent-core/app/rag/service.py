@@ -23,12 +23,14 @@ async def build_rag_context(
     query: str,
     *,
     limit: int = 3,
+    embedding_model: str,
 ) -> RagContext:
     results = await retrieve_knowledge(
         engine,
         embeddings,
         query,
         limit=limit,
+        embedding_model=embedding_model,
     )
 
     citations = build_knowledge_citations(results)

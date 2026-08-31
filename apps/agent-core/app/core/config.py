@@ -63,6 +63,7 @@ class Settings(BaseSettings):
         "openai_reasoning_effort",
         "jwt_secret_key",
         "refund_approver_user_id",
+        "rag_embedding_cache_dir",
         mode="before",
     )
     @classmethod
@@ -96,14 +97,32 @@ class Settings(BaseSettings):
         max_length=64,
     )
 
-    openai_embedding_model: str = Field(
-        default="text-embedding-3-small",
-        validation_alias="OPENAI_EMBEDDING_MODEL",
+    rag_embedding_model: str = Field(
+        default="BAAI/bge-m3",
+        validation_alias="RAG_EMBEDDING_MODEL",
         min_length=1,
         max_length=100,
+    )
+
+    rag_embedding_dimensions: int = Field(
+        default=1024,
+        validation_alias="RAG_EMBEDDING_DIMENSIONS",
+        ge=1024,
+        le=1024,
+    )
+
+    rag_embedding_cache_dir: Path | None = Field(
+        default=None,
+        validation_alias="RAG_EMBEDDING_CACHE_DIR",
+    )
+
+    rag_embedding_device: Literal["cpu", "cuda"] = Field(
+        default="cpu",
+        validation_alias="RAG_EMBEDDING_DEVICE",
     )
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """在进程内缓存配置对象，避免每个请求重复读取环境变量和配置文件。"""
     return Settings()

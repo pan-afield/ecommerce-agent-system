@@ -34,8 +34,10 @@ def make_chunk(chunk_id: str) -> KnowledgeChunk:
     )
 
 
+@pytest.mark.parametrize("query", ["退款政策", "return policy"])
 async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
     monkeypatch: pytest.MonkeyPatch,
+    query: str,
 ) -> None:
     events: list[str] = []
     embeddings = FakeEmbeddings()
@@ -47,9 +49,10 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
         engine: AsyncEngine,
         query_embedding: list[float],
         *,
+        embedding_model: str,
         limit: int,
     ) -> list[SemanticSearchResult]:
-        events.append(f"semantic:{query_embedding}:{limit}")
+        events.append(f"semantic:{embedding_model}:{query_embedding}:{limit}")
         return [SemanticSearchResult(chunk=semantic_chunk, distance=0.1)]
 
     async def fake_keyword_search(
@@ -85,15 +88,16 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
     results = await retrieval_module.retrieve_knowledge(
         engine=cast(AsyncEngine, object()),
         embeddings=embeddings,
-        query="  退款政策  ",
+        query=f"  {query}  ",
+        embedding_model="test-model",
         limit=2,
     )
 
     assert results == expected
-    assert embeddings.query_texts == ["退款政策"]
+    assert embeddings.query_texts == [query]
     assert events == [
-        "semantic:[0.1, 0.2, 0.3]:2",
-        "keyword:退款政策:2",
+        "semantic:test-model:[0.1, 0.2, 0.3]:2",
+        f"keyword:{query}:2",
         "fuse:1:1:2",
     ]
 
@@ -117,6 +121,7 @@ async def test_retrieve_knowledge_rejects_invalid_input_before_embedding(
             engine=cast(AsyncEngine, object()),
             embeddings=embeddings,
             query=query,
+            embedding_model="test-model",
             limit=limit,
         )
 

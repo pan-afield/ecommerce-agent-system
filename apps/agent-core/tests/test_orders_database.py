@@ -15,6 +15,11 @@ from app.main import create_app
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
 
 
+@pytest.fixture(autouse=True)
+def avoid_loading_local_embedding_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.main.create_local_embeddings", lambda _settings: object())
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_order_detail_uses_isolated_postgres() -> None:

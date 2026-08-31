@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from io import BytesIO
 
+from llama_index.core import Document
 from pypdf import PdfReader
 
 from app.rag.chunking import KnowledgeChunk, chunk_policy_text
@@ -46,15 +47,24 @@ def chunk_pdf_document(
     source_id: str,
     pdf_bytes: bytes,
 ) -> list[KnowledgeChunk]:
+    """把每个非空 PDF 页面包装为 Document 后切片，并保留原始页码。"""
     pages = extract_pdf_pages(source_id, pdf_bytes)
     chunks: list[KnowledgeChunk] = []
 
     for page in pages:
+        document = Document(
+            text=page.content,
+            metadata={
+                "source_id": page.source_id,
+                "page_number": page.page_number,
+            },
+        )
+
         chunks.extend(
             chunk_policy_text(
-                page.source_id,
-                page.content,
-                page_number=page.page_number,
+                str(document.metadata["source_id"]),
+                document.text,
+                page_number=int(document.metadata["page_number"]),
             )
         )
 

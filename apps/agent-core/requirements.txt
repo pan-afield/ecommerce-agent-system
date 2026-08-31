@@ -14,3 +14,6 @@ sqlalchemy[asyncio]==2.0.42
 pypdf==6.16.2
 uvicorn==0.35.0
 pgvector==0.4.1
+llama-index-core==0.14.24
+llama-index-embeddings-huggingface==0.7.0
+sentence-transformers==6.0.0

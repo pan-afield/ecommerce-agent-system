@@ -36,6 +36,7 @@ def build_knowledge_citations(
 def format_knowledge_citations(
     citations: list[KnowledgeCitation],
 ) -> str:
+    """将引用格式化为可放入客服提示词的文本；空列表返回空字符串。"""
     if not citations:
         return ""
 

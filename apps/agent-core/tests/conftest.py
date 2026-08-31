@@ -9,7 +9,11 @@ from app.main import create_app
 
 
 @pytest.fixture
-def app() -> FastAPI:
+def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
+    monkeypatch.setattr(
+        "app.main.create_local_embeddings",
+        lambda settings: object(),
+    )
     settings = Settings(
         environment="test",
         database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",

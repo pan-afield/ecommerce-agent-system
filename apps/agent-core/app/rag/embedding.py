@@ -11,14 +11,14 @@ class EmbeddedKnowledgeChunk:
 
     chunk: KnowledgeChunk
     embedding: list[float]
+    embedding_model: str
 
 
-EMBEDDING_DIMENSIONS = 1536
+EMBEDDING_DIMENSIONS = 1024
 
 
 async def embed_knowledge_chunks(
-    chunks: list[KnowledgeChunk],
-    embeddings: Embeddings,
+    chunks: list[KnowledgeChunk], embeddings: Embeddings, *, embedding_model: str
 ) -> list[EmbeddedKnowledgeChunk]:
     """异步生成知识块嵌入，并按原顺序组合为向量化知识块。"""
     if not chunks:
@@ -33,6 +33,6 @@ async def embed_knowledge_chunks(
         raise ValueError(f"embedding dimension must be {EMBEDDING_DIMENSIONS}")
 
     return [
-        EmbeddedKnowledgeChunk(chunk=chunk, embedding=vector)
+        EmbeddedKnowledgeChunk(chunk=chunk, embedding=vector, embedding_model=embedding_model)
         for chunk, vector in zip(chunks, vectors, strict=True)
     ]

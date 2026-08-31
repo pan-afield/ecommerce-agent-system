@@ -13,7 +13,9 @@ import app.api.routes.rag as rag_route_module
 from app.api.router import api_router
 from app.core.config import Settings
 from app.rag.citations import KnowledgeCitation
+from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import RagContext
+from app.rag.vector_store import RagVectorDimensionError
 
 
 class UnusedEmbeddings(Embeddings):
@@ -96,7 +98,7 @@ async def test_rag_search_returns_citations_from_service(
         content="退款需要订单本人提交。",
         score=0.25,
     )
-    calls: list[tuple[object, object, str, int]] = []
+    calls: list[tuple[object, object, str, str, int]] = []
 
     async def fake_build_context(
         engine: AsyncEngine,
@@ -104,8 +106,9 @@ async def test_rag_search_returns_citations_from_service(
         query: str,
         *,
         limit: int,
+        embedding_model: str,
     ) -> RagContext:
-        calls.append((engine, embeddings, query, limit))
+        calls.append((engine, embeddings, query, embedding_model, limit))
         return RagContext(query="退款政策", citations=[citation])
 
     monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
@@ -136,6 +139,7 @@ async def test_rag_search_returns_citations_from_service(
             app.state.database_engine,
             app.state.rag_embeddings,
             "  退款政策  ",
+            app.state.settings.rag_embedding_model,
             5,
         )
     ]
@@ -224,6 +228,68 @@ async def test_rag_search_maps_service_value_error_to_422(
         }
     }
     assert sensitive_detail not in response.text
+
+
+@pytest.mark.asyncio
+async def test_rag_search_maps_embedding_failure_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    sensitive_detail = "embedding dimension must be 1024"
+
+    async def failing_service(*args: object, **kwargs: object) -> RagContext:
+        raise RagEmbeddingError(sensitive_detail)
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", failing_service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "rag_embedding_unavailable",
+            "message": "知识库向量服务暂时不可用。",
+        }
+    }
+    assert sensitive_detail not in response.text
+
+
+@pytest.mark.asyncio
+async def test_rag_search_maps_vector_dimension_mismatch_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    sensitive_detail = (
+        "knowledge embedding column dimension mismatch: expected 1024, got 1536"
+    )
+
+    async def failing_service(*args: object, **kwargs: object) -> RagContext:
+        raise RagVectorDimensionError(sensitive_detail)
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", failing_service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "rag_database_incompatible",
+            "message": "知识库向量数据库配置不兼容。",
+        }
+    }
+    assert "1536" not in response.text
 
 
 @pytest.mark.asyncio

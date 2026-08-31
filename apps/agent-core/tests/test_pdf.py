@@ -1,11 +1,13 @@
 from hashlib import sha256
 from io import BytesIO
+from unittest.mock import Mock
 
 import pytest
 from pypdf import PdfWriter
 from pypdf.errors import PdfReadError
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+import app.rag.pdf as pdf_module
 from app.rag.chunking import KnowledgeChunk
 from app.rag.pdf import ExtractedPdfPage, chunk_pdf_document, extract_pdf_pages
 
@@ -90,3 +92,46 @@ def test_chunk_pdf_document_creates_traceable_chunks_from_pdf_bytes() -> None:
             page_number=2,
         )
     ]
+
+
+def test_chunk_pdf_document_uses_document_text_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = ExtractedPdfPage(
+        source_id="extracted-source",
+        page_number=2,
+        content="Extracted page text.",
+    )
+    document = Mock(
+        metadata={"source_id": "document-source", "page_number": 7},
+        text="Document text used for chunking.",
+    )
+    expected_chunks = [
+        KnowledgeChunk(
+            chunk_id="e" * 64,
+            source_id="document-source",
+            chunk_index=0,
+            content="Document text used for chunking.",
+            page_number=7,
+        )
+    ]
+    extract_pages = Mock(return_value=[page])
+    document_constructor = Mock(return_value=document)
+    chunk_text = Mock(return_value=expected_chunks)
+    monkeypatch.setattr(pdf_module, "extract_pdf_pages", extract_pages)
+    monkeypatch.setattr(pdf_module, "Document", document_constructor)
+    monkeypatch.setattr(pdf_module, "chunk_policy_text", chunk_text)
+
+    chunks = pdf_module.chunk_pdf_document("input-source", b"pdf-bytes")
+
+    assert chunks == expected_chunks
+    extract_pages.assert_called_once_with("input-source", b"pdf-bytes")
+    document_constructor.assert_called_once_with(
+        text="Extracted page text.",
+        metadata={"source_id": "extracted-source", "page_number": 2},
+    )
+    chunk_text.assert_called_once_with(
+        "document-source",
+        "Document text used for chunking.",
+        page_number=7,
+    )

@@ -12,7 +12,9 @@ from app.api.dependencies import get_chat_service
 from app.core.config import Settings
 from app.main import create_app
 from app.rag.citations import KnowledgeCitation
+from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import RagContext
+from app.rag.vector_store import RagVectorDimensionError
 from app.services.chat import (
     ChatProviderTimeoutError,
     ChatResult,
@@ -184,6 +186,7 @@ async def test_chat_with_embeddings_builds_and_forwards_rag_prompt(
         app.state.database_engine,
         app.state.rag_embeddings,
         "退货政策",
+        embedding_model=app.state.settings.rag_embedding_model,
     )
     service.reply.assert_awaited_once_with(
         "退货政策",
@@ -206,7 +209,10 @@ async def test_chat_concurrent_requests_keep_rag_data_isolated(
         engine: object,
         embeddings: object,
         query: str,
+        *,
+        embedding_model: str,
     ) -> RagContext:
+        assert embedding_model == app.state.settings.rag_embedding_model
         await asyncio.sleep(0)
         citation = KnowledgeCitation(
             source_id=f"policy-{query}",
@@ -278,6 +284,46 @@ async def test_chat_maps_rag_value_error_without_calling_service(
         "detail": "无法构建 RAG 上下文。",
     }
     assert "internal embedding detail" not in response.text
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_maps_embedding_failure_to_503_without_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+    app.state.rag_embeddings = object()
+    sensitive_detail = "embedding dimension must be 1024"
+    build_context = AsyncMock(side_effect=RagEmbeddingError(sensitive_detail))
+    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+
+    response = await post_chat(app, "退货政策")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "知识库向量服务暂时不可用。"}
+    assert sensitive_detail not in response.text
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_maps_vector_dimension_mismatch_to_503_without_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+    app.state.rag_embeddings = object()
+    sensitive_detail = (
+        "knowledge embedding column dimension mismatch: expected 1024, got 1536"
+    )
+    build_context = AsyncMock(side_effect=RagVectorDimensionError(sensitive_detail))
+    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+
+    response = await post_chat(app, "退货政策")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "知识库向量数据库配置不兼容。"}
+    assert "1536" not in response.text
     service.reply.assert_not_awaited()
 
 
@@ -370,6 +416,7 @@ async def test_chat_stream_with_embeddings_forwards_rag_prompt(
         app.state.database_engine,
         app.state.rag_embeddings,
         "退货政策",
+        embedding_model=app.state.settings.rag_embedding_model,
     )
     build_prompt_mock.assert_called_once_with("退货政策", [citation])
     service.reply.assert_awaited_once_with(
@@ -402,6 +449,58 @@ async def test_chat_stream_maps_rag_value_error_without_calling_service(
     assert response.status_code == 422
     assert response.json() == {"detail": "无法构建 RAG 上下文。"}
     assert "internal stream detail" not in response.text
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_maps_embedding_failure_to_503_without_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+    app.state.rag_embeddings = object()
+    sensitive_detail = "embedding model cache unavailable"
+    build_context = AsyncMock(side_effect=RagEmbeddingError(sensitive_detail))
+    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/stream",
+            json={"message": "退货政策"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "知识库向量服务暂时不可用。"}
+    assert sensitive_detail not in response.text
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_maps_vector_dimension_mismatch_to_503_without_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+    app.state.rag_embeddings = object()
+    sensitive_detail = (
+        "knowledge embedding column dimension mismatch: expected 1024, got 1536"
+    )
+    build_context = AsyncMock(side_effect=RagVectorDimensionError(sensitive_detail))
+    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/stream",
+            json={"message": "退货政策"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "知识库向量数据库配置不兼容。"}
+    assert "1536" not in response.text
     service.reply.assert_not_awaited()
 
 

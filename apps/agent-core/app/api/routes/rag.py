@@ -6,7 +6,9 @@ from pydantic import BaseModel
 
 from app.api.dependencies import get_current_user_id
 from app.api.serializers import format_citations
+from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import build_rag_context
+from app.rag.vector_store import RagVectorDimensionError
 from app.schemas.error import ErrorDetail, ErrorResponse
 from app.schemas.rag import KnowledgeCitationResponse
 
@@ -20,7 +22,12 @@ class RagSearchResponse(BaseModel):
 
 def _rag_error_response(
     status_code: int,
-    code: Literal["rag_not_configured", "rag_invalid_query"],
+    code: Literal[
+        "rag_not_configured",
+        "rag_invalid_query",
+        "rag_embedding_unavailable",
+        "rag_database_incompatible",
+    ],
     message: str,
 ) -> JSONResponse:
     response = ErrorResponse(
@@ -57,6 +64,7 @@ async def search_rag(
 ) -> RagSearchResponse | JSONResponse:
     engine = request.app.state.database_engine
     embeddings = request.app.state.rag_embeddings
+    embedding_model = request.app.state.settings.rag_embedding_model
 
     if embeddings is None:
         return _rag_error_response(
@@ -67,10 +75,19 @@ async def search_rag(
 
     try:
         context = await build_rag_context(
-            engine,
-            embeddings,
-            query,
-            limit=limit,
+            engine, embeddings, query, limit=limit, embedding_model=embedding_model
+        )
+    except RagEmbeddingError:
+        return _rag_error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="rag_embedding_unavailable",
+            message="知识库向量服务暂时不可用。",
+        )
+    except RagVectorDimensionError:
+        return _rag_error_response(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            code="rag_database_incompatible",
+            message="知识库向量数据库配置不兼容。",
         )
     except ValueError:
         return _rag_error_response(

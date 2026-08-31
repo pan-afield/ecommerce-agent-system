@@ -10,6 +10,8 @@ ApiErrorCode = Literal[
     "chat_provider_unavailable",
     "rag_not_configured",
     "rag_invalid_query",
+    "rag_embedding_unavailable",
+    "rag_database_incompatible",
 ]
 
 

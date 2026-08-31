@@ -41,16 +41,24 @@ def make_chunks() -> list[KnowledgeChunk]:
 
 
 async def test_embed_knowledge_chunks_returns_vectors_in_chunk_order() -> None:
-    first_vector = [0.1] * 1536
-    second_vector = [0.3] * 1536
+    first_vector = [0.1] * 1024
+    second_vector = [0.3] * 1024
     fake = FakeEmbeddings([first_vector, second_vector])
     chunks = make_chunks()
 
-    embedded = await embed_knowledge_chunks(chunks, fake)
+    embedded = await embed_knowledge_chunks(chunks, fake, embedding_model="test-model")
 
     assert embedded == [
-        EmbeddedKnowledgeChunk(chunk=chunks[0], embedding=first_vector),
-        EmbeddedKnowledgeChunk(chunk=chunks[1], embedding=second_vector),
+        EmbeddedKnowledgeChunk(
+            chunk=chunks[0],
+            embedding=first_vector,
+            embedding_model="test-model",
+        ),
+        EmbeddedKnowledgeChunk(
+            chunk=chunks[1],
+            embedding=second_vector,
+            embedding_model="test-model",
+        ),
     ]
     assert fake.received_texts == [chunk.content for chunk in chunks]
     assert fake.async_call_count == 1
@@ -59,7 +67,7 @@ async def test_embed_knowledge_chunks_returns_vectors_in_chunk_order() -> None:
 async def test_embed_knowledge_chunks_does_not_call_model_for_empty_input() -> None:
     fake = FakeEmbeddings([])
 
-    embedded = await embed_knowledge_chunks([], fake)
+    embedded = await embed_knowledge_chunks([], fake, embedding_model="test-model")
 
     assert embedded == []
     assert fake.received_texts is None
@@ -70,11 +78,19 @@ async def test_embed_knowledge_chunks_rejects_mismatched_vector_count() -> None:
     fake = FakeEmbeddings([[0.1, 0.2]])
 
     with pytest.raises(ValueError, match="embeddings"):
-        await embed_knowledge_chunks(make_chunks(), fake)
+        await embed_knowledge_chunks(
+            make_chunks(),
+            fake,
+            embedding_model="test-model",
+        )
 
 
 async def test_embed_knowledge_chunks_rejects_wrong_vector_dimension() -> None:
-    fake = FakeEmbeddings([[0.1] * 1536, [0.2, 0.3]])
+    fake = FakeEmbeddings([[0.1] * 1024, [0.2, 0.3]])
 
-    with pytest.raises(ValueError, match="embedding dimension must be 1536"):
-        await embed_knowledge_chunks(make_chunks(), fake)
+    with pytest.raises(ValueError, match="embedding dimension must be 1024"):
+        await embed_knowledge_chunks(
+            make_chunks(),
+            fake,
+            embedding_model="test-model",
+        )

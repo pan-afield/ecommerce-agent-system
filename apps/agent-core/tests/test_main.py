@@ -25,7 +25,7 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
         patch("app.main.ChatService") as service_type,
         patch("app.main.AsyncPostgresSaver") as saver_type,
         patch("app.main.build_lookup_order_tool") as tool_builder,
-        patch("app.main.create_openai_embeddings") as embeddings_builder,
+        patch("app.main.create_local_embeddings") as embeddings_builder,
     ):
         fake_order_tool = MagicMock()
         fake_embeddings = MagicMock()
@@ -50,3 +50,50 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
     assert application.state.rag_embeddings is fake_embeddings
     tool_builder.assert_called_once_with(application.state.database_engine)
     assert service_type.call_args.kwargs["order_tools"] == [fake_order_tool]
+
+
+async def test_lifespan_initializes_rag_without_openai_chat_configuration() -> None:
+    settings = Settings(
+        environment="test",
+        database_url=(
+            "postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test"
+        ),
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_embeddings = MagicMock()
+
+    with patch(
+        "app.main.create_local_embeddings",
+        return_value=fake_embeddings,
+    ) as embeddings_builder:
+        application = create_app(settings)
+
+        async with application.router.lifespan_context(application):
+            assert application.state.rag_embeddings is fake_embeddings
+            assert application.state.chat_service is None
+
+    embeddings_builder.assert_called_once_with(settings)
+
+
+async def test_lifespan_keeps_app_available_when_local_rag_initialization_fails() -> None:
+    settings = Settings(
+        environment="test",
+        database_url=(
+            "postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test"
+        ),
+        openai_api_key=None,
+        _env_file=None,
+    )
+
+    with patch(
+        "app.main.create_local_embeddings",
+        side_effect=RuntimeError("model cache is unavailable"),
+    ) as embeddings_builder:
+        application = create_app(settings)
+
+        async with application.router.lifespan_context(application):
+            assert application.state.rag_embeddings is None
+            assert application.state.chat_service is None
+
+    embeddings_builder.assert_called_once_with(settings)

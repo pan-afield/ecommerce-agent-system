@@ -9,7 +9,7 @@ from app.api.exception_handlers import chat_error_handler
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
-from app.rag.openai_embeddings import create_openai_embeddings
+from app.rag.local_embeddings import create_local_embeddings
 from app.services.chat import ChatError, ChatService
 from app.services.health import database_is_ready
 from app.tools.orders import build_lookup_order_tool
@@ -21,6 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """在应用启动时创建共享资源，并在退出时释放数据库引擎。"""
         engine = create_database_engine(app_settings.database_url)
         app.state.rag_embeddings = None
         app.state.database_engine = engine
@@ -28,6 +29,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.chat_service = None
 
         try:
+            try:
+                app.state.rag_embeddings = create_local_embeddings(app_settings)
+            except Exception:
+                app.state.rag_embeddings = None
+
             if app_settings.openai_api_key is None:
                 yield
                 return
@@ -35,7 +41,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             async with AsyncPostgresSaver.from_conn_string(
                 app_settings.database_url,
             ) as checkpointer:
-                app.state.rag_embeddings = create_openai_embeddings(app_settings)
                 await checkpointer.setup()
 
                 chat_model = OpenAIChatAdapter(

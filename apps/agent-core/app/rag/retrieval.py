@@ -12,7 +12,9 @@ async def retrieve_knowledge(
     query: str,
     *,
     limit: int = 3,
+    embedding_model: str,
 ) -> list[HybridSearchResult]:
+    """执行语义和关键词两条检索分支，再融合为稳定排序结果。"""
     normalized_query = query.strip()
     if not normalized_query:
         raise ValueError("query must not be empty or whitespace")
@@ -27,6 +29,7 @@ async def retrieve_knowledge(
         engine,
         query_embedding,
         limit=limit,
+        embedding_model=embedding_model,
     )
 
     # 异步执行关键词检索

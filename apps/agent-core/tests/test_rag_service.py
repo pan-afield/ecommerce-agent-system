@@ -38,7 +38,7 @@ async def test_build_rag_context_cleans_query_and_transfers_citations(
         content="退款需要订单本人提交。",
         score=0.2,
     )
-    calls: list[tuple[object, object, str, int]] = []
+    calls: list[tuple[object, object, str, str, int]] = []
 
     async def fake_retrieve(
         received_engine: AsyncEngine,
@@ -46,8 +46,17 @@ async def test_build_rag_context_cleans_query_and_transfers_citations(
         received_query: str,
         *,
         limit: int,
+        embedding_model: str,
     ) -> list[HybridSearchResult]:
-        calls.append((received_engine, received_embeddings, received_query, limit))
+        calls.append(
+            (
+                received_engine,
+                received_embeddings,
+                received_query,
+                embedding_model,
+                limit,
+            )
+        )
         return retrieval_result
 
     def fake_build_citations(
@@ -64,11 +73,12 @@ async def test_build_rag_context_cleans_query_and_transfers_citations(
         embeddings,
         "  退款政策  ",
         limit=5,
+        embedding_model="test-model",
     )
 
     assert context.query == "退款政策"
     assert context.citations == [citation]
-    assert calls == [(engine, embeddings, "  退款政策  ", 5)]
+    assert calls == [(engine, embeddings, "  退款政策  ", "test-model", 5)]
 
 
 async def test_build_rag_context_propagates_retrieval_error(
@@ -84,6 +94,7 @@ async def test_build_rag_context_propagates_retrieval_error(
             cast(AsyncEngine, object()),
             UnusedEmbeddings(),
             "   ",
+            embedding_model="test-model",
         )
 
 
