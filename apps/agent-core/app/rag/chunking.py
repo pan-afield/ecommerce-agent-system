@@ -36,12 +36,30 @@ def chunk_policy_text(
     normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     paragraphs = []
+    pending_heading = None
 
     for paragraph in normalized_text.split("\n\n"):
         cleaned = paragraph.strip()
 
-        if cleaned:
+        if not cleaned:
+            continue
+
+        is_heading = cleaned.startswith("# ")
+
+        if is_heading:
+            if pending_heading is not None:
+                paragraphs.append(pending_heading)
+            pending_heading = cleaned
+            continue
+
+        if pending_heading is not None:
+            paragraphs.append(f"{pending_heading}\n\n{cleaned}")
+            pending_heading = None
+        else:
             paragraphs.append(cleaned)
+
+    if pending_heading is not None:
+        paragraphs.append(pending_heading)
 
     contents: list[str] = []
 

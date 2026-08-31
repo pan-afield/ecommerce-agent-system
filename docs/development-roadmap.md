@@ -100,8 +100,8 @@ V0.6 后端实现、自动化验证和真实本地模型人工验收已完成：
 - 语义检索、关键词检索、RRF 稳定融合及 citations。
 - `/v1/rag/search`、普通 chat 和 SSE 的 RAG 接入与稳定错误映射。
 - CLI 支持 `.txt/.md/.pdf` 多文件导入和 `--rebuild`。
-- 后端完整验证为 **360 passed**，包含 8 个隔离 PostgreSQL 集成测试；Ruff 与变更文件 Mypy strict 通过。
-- 人工验收确认无 OpenAI key 时 RAG 独立可用；真实 `BAAI/bge-m3` 首次导入 8 块、重复导入 0 块，中英文查询均返回 citations。
+- 后端完整验证为 **366 passed**，包含 8 个隔离 PostgreSQL 集成测试；Ruff 与变更文件 Mypy strict 通过。
+- 人工验收确认无 OpenAI key 时 RAG 独立可用；质量修复后真实 `BAAI/bge-m3` 重建为 4 个“标题 + 正文”块，重复增量导入 0 块；中文、英文查询返回正文 citations，“苹果”返回空 citations。
 
 当前 V0.6 完成度为 **100%**。独立 RAG Agent 节点、向量/全文索引、后台 ingestion Worker、文档权限和大规模检索评估属于后续增强；自动测试继续使用 Fake，不下载真实模型。
 

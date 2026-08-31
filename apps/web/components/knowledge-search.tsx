@@ -70,17 +70,15 @@ export function KnowledgeSearch() {
   }
 
   return (
-    <section className="shrink-0 border-b border-line bg-surface-raised" aria-labelledby="knowledge-search-title">
-      <div className="mx-auto max-w-4xl px-5 py-4 sm:px-8">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="font-mono text-[10px] uppercase text-accent">Evidence / V0.6</p>
-            <h2 className="mt-1 flex items-center gap-2 text-sm font-bold text-ink" id="knowledge-search-title">
-              <BookOpen className="size-4" aria-hidden="true" />
-              知识库检索
-            </h2>
-          </div>
-          <form className="flex w-full gap-2 sm:max-w-md" onSubmit={handleSubmit}>
+    <section className="min-w-0" aria-labelledby="knowledge-search-title">
+      <div className="p-4">
+        <div>
+          <p className="font-mono text-[10px] uppercase text-accent">Evidence / V0.6</p>
+          <h2 className="mt-1 flex items-center gap-2 text-sm font-bold text-ink" id="knowledge-search-title">
+            <BookOpen className="size-4" aria-hidden="true" />
+            知识库检索
+          </h2>
+          <form className="mt-3 flex w-full gap-2" onSubmit={handleSubmit}>
             <div className="min-w-0 flex-1">
               <label className="sr-only" htmlFor="knowledge-query">知识库查询</label>
               <input

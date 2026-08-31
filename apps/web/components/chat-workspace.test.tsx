@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,6 +61,26 @@ describe("ChatWorkspace", () => {
     streamChatMessageMock.mockReset();
     useReducedMotionMock.mockReset();
     useReducedMotionMock.mockReturnValue(false);
+  });
+
+  it("keeps business tools outside the independently scrolling chat main area", async () => {
+    const user = userEvent.setup();
+    render(<ChatWorkspace />);
+
+    const chatMain = screen.getByRole("main", { name: "客服工作台" });
+    expect(within(chatMain).queryByRole("heading", { name: "订单查询" })).not.toBeInTheDocument();
+    expect(within(chatMain).queryByRole("heading", { name: "知识库检索" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "业务工具" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "打开知识库检索" }));
+    expect(screen.getByRole("tab", { name: "知识库" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("已打开知识库检索。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "关闭业务工具面板" }));
+    expect(screen.getByText("已关闭业务工具。")).toBeInTheDocument();
   });
 
   it("sends a trimmed message and appends the assistant response", async () => {

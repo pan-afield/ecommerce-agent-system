@@ -146,6 +146,29 @@ async def test_rag_search_returns_citations_from_service(
 
 
 @pytest.mark.asyncio
+async def test_rag_search_returns_empty_citations_for_unrelated_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        return RagContext(query="苹果", citations=[])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "苹果"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "苹果", "citations": []}
+
+
+@pytest.mark.asyncio
 async def test_rag_search_returns_validation_error_for_missing_query() -> None:
     app = create_rag_test_app()
     transport = ASGITransport(app=app)

@@ -48,9 +48,16 @@ describe("KnowledgeSearch", () => {
     expect(await screen.findByRole("region", { name: "知识库证据" })).toHaveTextContent(
       "refund-policy-v1",
     );
+    expect(screen.getByRole("region", { name: "知识库证据" })).toHaveTextContent("1 条证据");
     expect(screen.getByText("第 2 页")).toBeInTheDocument();
     expect(screen.getAllByText("退款需要订单本人提交。")).toHaveLength(2);
     expect(screen.getByText(citation.chunk_id)).toBeInTheDocument();
+    expect(screen.getByText("融合排序分 0.2500")).toBeInTheDocument();
+
+    const details = screen.getByText("refund-policy-v1").closest("details");
+    expect(details).not.toBeNull();
+    await user.click(screen.getByText("refund-policy-v1"));
+    expect(details).toHaveAttribute("open");
   });
 
   it("shows a no-result state without inventing evidence", async () => {
@@ -113,5 +120,32 @@ describe("KnowledgeSearch", () => {
       "data-motion-mode",
       "reduced",
     );
+  });
+
+  it("uses the evidence count for multiple chunk-level citations", async () => {
+    const user = userEvent.setup();
+    searchKnowledgeMock.mockResolvedValue({
+      query: "退款",
+      citations: [
+        citation,
+        {
+          ...citation,
+          chunk_id: "b".repeat(64),
+          source_id: "refund-policy-v1",
+          page_number: 3,
+          score: 0.12,
+        },
+      ],
+    });
+    render(<KnowledgeSearch />);
+
+    await user.type(screen.getByRole("textbox", { name: "知识库查询" }), "退款");
+    await user.click(screen.getByRole("button", { name: "检索知识库" }));
+
+    const evidence = await screen.findByRole("region", { name: "知识库证据" });
+    expect(evidence).toHaveTextContent("2 条证据");
+    expect(evidence).not.toHaveTextContent(/SOURCES?|来源数量|相似度|相关度/);
+    expect(evidence).toHaveTextContent("融合排序分 0.2500");
+    expect(evidence).toHaveTextContent("融合排序分 0.1200");
   });
 });

@@ -50,6 +50,20 @@ describe("searchKnowledge", () => {
     });
   });
 
+  it.each([
+    ["rag_embedding_unavailable", "知识库向量服务暂时不可用。"],
+    ["rag_database_incompatible", "知识库向量数据库配置不兼容。"],
+  ] as const)("accepts stable %s errors", async (code, message) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ error: { code, message } }, 503),
+      ),
+    );
+
+    await expect(searchKnowledge("退款")).rejects.toMatchObject({ code, status: 503, message });
+  });
+
   it("rejects empty input and maps browser network failures", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError("offline"));
     vi.stubGlobal("fetch", fetchMock);

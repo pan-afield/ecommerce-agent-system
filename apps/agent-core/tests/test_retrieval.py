@@ -34,6 +34,15 @@ def make_chunk(chunk_id: str) -> KnowledgeChunk:
     )
 
 
+def make_quality_chunk(chunk_id: str, content: str) -> KnowledgeChunk:
+    return KnowledgeChunk(
+        chunk_id=chunk_id,
+        source_id="rag-smoke-policy.md",
+        chunk_index=0,
+        content=content,
+    )
+
+
 @pytest.mark.parametrize("query", ["退款政策", "return policy"])
 async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
     monkeypatch: pytest.MonkeyPatch,
@@ -100,6 +109,124 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
         f"keyword:{query}:2",
         "fuse:1:1:2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_does_not_fill_limit_for_unrelated_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = make_quality_chunk("a" * 64, "# 退款政策")
+    unrelated_candidates = [
+        SemanticSearchResult(chunk=title, distance=0.95),
+    ]
+
+    async def fake_semantic_search(*args: object, **kwargs: object) -> list[SemanticSearchResult]:
+        return unrelated_candidates
+
+    async def fake_keyword_search(*args: object, **kwargs: object) -> list[KnowledgeChunk]:
+        return []
+
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_similar_knowledge_chunks",
+        fake_semantic_search,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_knowledge_chunks_by_keyword",
+        fake_keyword_search,
+    )
+
+    results = await retrieval_module.retrieve_knowledge(
+        cast(AsyncEngine, object()),
+        FakeEmbeddings(),
+        "苹果",
+        embedding_model="test-model",
+        limit=3,
+    )
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_keeps_policy_body_and_discards_heading_only_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    title = make_quality_chunk("b" * 64, "# 退款政策")
+    body = make_quality_chunk(
+        "c" * 64,
+        "订单签收后七天内可以申请退款。退款申请必须由订单本人提交。",
+    )
+
+    async def fake_semantic_search(*args: object, **kwargs: object) -> list[SemanticSearchResult]:
+        return [
+            SemanticSearchResult(chunk=title, distance=0.32),
+            SemanticSearchResult(chunk=body, distance=0.18),
+        ]
+
+    async def fake_keyword_search(*args: object, **kwargs: object) -> list[KnowledgeChunk]:
+        return [body]
+
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_similar_knowledge_chunks",
+        fake_semantic_search,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_knowledge_chunks_by_keyword",
+        fake_keyword_search,
+    )
+
+    results = await retrieval_module.retrieve_knowledge(
+        cast(AsyncEngine, object()),
+        FakeEmbeddings(),
+        "退款政策",
+        embedding_model="test-model",
+        limit=3,
+    )
+
+    assert [result.chunk.content for result in results] == [body.content]
+    assert results[0].chunk.content != title.content
+
+
+@pytest.mark.parametrize("query", ["退款政策", "return policy"])
+@pytest.mark.asyncio
+async def test_retrieve_knowledge_keeps_stable_bilingual_policy_hit(
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+) -> None:
+    body = make_quality_chunk(
+        "d" * 64,
+        "订单签收后七天内可以申请退款。 Customers may request a refund within seven days.",
+    )
+
+    async def fake_semantic_search(*args: object, **kwargs: object) -> list[SemanticSearchResult]:
+        return [SemanticSearchResult(chunk=body, distance=0.2)]
+
+    async def fake_keyword_search(*args: object, **kwargs: object) -> list[KnowledgeChunk]:
+        return [body]
+
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_similar_knowledge_chunks",
+        fake_semantic_search,
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "search_knowledge_chunks_by_keyword",
+        fake_keyword_search,
+    )
+
+    results = await retrieval_module.retrieve_knowledge(
+        cast(AsyncEngine, object()),
+        FakeEmbeddings(),
+        query,
+        embedding_model="test-model",
+        limit=3,
+    )
+
+    assert [result.chunk.content for result in results] == [body.content]
 
 
 @pytest.mark.parametrize(

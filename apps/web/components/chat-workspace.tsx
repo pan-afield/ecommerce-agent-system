@@ -11,20 +11,24 @@ import {
 } from "@ecommerce-agent-system/ui";
 import {
   AlertCircle,
+  BookOpen,
   Bot,
   LoaderCircle,
   MessageSquarePlus,
   MessageSquareText,
+  PackageCheck,
   RotateCcw,
   Send,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
+import {
+  BusinessToolsPanel,
+  type BusinessTool,
+} from "@/components/business-tools-panel";
 import { OrderDetailCard } from "@/components/order-detail-card";
-import { OrderLookup } from "@/components/order-lookup";
 import { KnowledgeEvidence } from "@/components/knowledge-evidence";
-import { KnowledgeSearch } from "@/components/knowledge-search";
 import { ChatApiError, streamChatMessage } from "@/lib/chat-api";
 import {
   clearChatSession,
@@ -181,6 +185,9 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionAnnouncement, setSessionAnnouncement] = useState("");
   const [streamPhase, setStreamPhase] = useState<ChatStreamPhase | null>(null);
+  const [activeTool, setActiveTool] = useState<BusinessTool>("order");
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolAnnouncement, setToolAnnouncement] = useState("");
   const requestInFlight = useRef(false);
   const activeAbortController = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -350,11 +357,23 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
     activeAbortController.current?.abort();
   }
 
+  function openTool(tool: BusinessTool) {
+    setActiveTool(tool);
+    setToolsOpen(true);
+    setToolAnnouncement(tool === "order" ? "已打开订单查询。" : "已打开知识库检索。");
+  }
+
+  function closeTools() {
+    setToolsOpen(false);
+    setToolAnnouncement("已关闭业务工具。");
+  }
+
   return (
-    <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
+    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-surface">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
-          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.5</p>
+          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.6</p>
           <h1 id="workspace-title" className="text-base font-bold text-ink">
             客服工作台
           </h1>
@@ -363,6 +382,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           <AnimatePresence initial={false} mode="wait">
             <motion.div
               animate="visible"
+              className="hidden sm:block"
               data-motion-mode={shouldReduceMotion ? "reduced" : "standard"}
               initial={shouldReduceMotion ? false : "hidden"}
               key={activeRequestId ? "busy" : `ready-${threadId ?? "pending"}`}
@@ -380,6 +400,29 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
             </motion.div>
           </AnimatePresence>
           <Button
+            aria-controls="business-tools-panel"
+            aria-label="打开订单查询"
+            aria-pressed={activeTool === "order"}
+            className="size-9 px-0"
+            onClick={() => openTool("order")}
+            title="订单查询"
+            variant={activeTool === "order" ? "secondary" : "ghost"}
+          >
+            <PackageCheck className="size-4" aria-hidden="true" />
+          </Button>
+          <Button
+            aria-controls="business-tools-panel"
+            aria-label="打开知识库检索"
+            aria-pressed={activeTool === "knowledge"}
+            className="size-9 px-0"
+            onClick={() => openTool("knowledge")}
+            title="知识库检索"
+            variant={activeTool === "knowledge" ? "secondary" : "ghost"}
+          >
+            <BookOpen className="size-4" aria-hidden="true" />
+          </Button>
+          <span className="mx-0.5 hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
+          <Button
             aria-label="开始新会话"
             className="size-9 px-0"
             disabled={Boolean(activeRequestId) || !sessionReady}
@@ -392,11 +435,11 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           <span className="sr-only" aria-live="polite">
             {sessionAnnouncement}
           </span>
+          <span className="sr-only" aria-live="polite">
+            {toolAnnouncement}
+          </span>
         </div>
       </header>
-
-      <OrderLookup approvalDemoEnabled={approvalDemoEnabled} />
-      <KnowledgeSearch />
 
       <section className="min-h-0 flex-1 overflow-y-auto" aria-label="消息记录">
         {messages.length === 0 ? (
@@ -499,6 +542,15 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           </div>
         </form>
       </footer>
-    </main>
+      </main>
+
+      <BusinessToolsPanel
+        activeTool={activeTool}
+        approvalDemoEnabled={approvalDemoEnabled}
+        isOpen={toolsOpen}
+        onClose={closeTools}
+        onSelectTool={openTool}
+      />
+    </div>
   );
 }

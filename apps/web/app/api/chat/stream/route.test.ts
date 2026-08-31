@@ -118,6 +118,25 @@ describe("POST /api/chat/stream", () => {
     });
   });
 
+  it("preserves stable RAG embedding errors before streaming starts", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_database_incompatible", message: "知识库向量数据库配置不兼容。" } },
+          503,
+        ),
+      ),
+    );
+
+    const response = await POST(createRequest({ message: "退款政策" }));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: { code: "rag_database_incompatible", message: "知识库向量数据库配置不兼容。" },
+    });
+  });
+
   it("sanitizes upstream authentication failures", async () => {
     vi.stubGlobal(
       "fetch",

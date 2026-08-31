@@ -4,6 +4,8 @@ export const RAG_LIMIT_MAX = 10;
 export const BACKEND_RAG_ERROR_CODES = [
   "rag_not_configured",
   "rag_invalid_query",
+  "rag_embedding_unavailable",
+  "rag_database_incompatible",
 ] as const;
 
 export const PROXY_RAG_ERROR_CODES = [

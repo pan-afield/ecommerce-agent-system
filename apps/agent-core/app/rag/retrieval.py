@@ -4,6 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.rag.ranking import HybridSearchResult, fuse_search_results
 from app.rag.vector_store import search_knowledge_chunks_by_keyword, search_similar_knowledge_chunks
 
+MAX_SEMANTIC_DISTANCE = 0.30
+
+
+def is_heading_only(content: str) -> bool:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    return len(lines) == 1 and lines[0].startswith("# ")
+
 
 # 混合检索
 async def retrieve_knowledge(
@@ -39,9 +46,19 @@ async def retrieve_knowledge(
         limit=limit,
     )
 
+    qualified_semantic_results = [
+        result
+        for result in semantic_results
+        if result.distance <= MAX_SEMANTIC_DISTANCE and not is_heading_only(result.chunk.content)
+    ]
+
+    qualified_keyword_results = [
+        chunk for chunk in keyword_results if not is_heading_only(chunk.content)
+    ]
+
     # 将两份检索结果融合为最终排名
     return fuse_search_results(
-        semantic_results,
-        keyword_results,
+        qualified_semantic_results,
+        qualified_keyword_results,
         limit=limit,
     )

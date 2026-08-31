@@ -196,6 +196,25 @@ describe("POST /api/chat", () => {
     });
   });
 
+  it("preserves stable RAG embedding errors from the chat upstream", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_embedding_unavailable", message: "知识库向量服务暂时不可用。" } },
+          503,
+        ),
+      ),
+    );
+
+    const response = await POST(createRequest(JSON.stringify({ message: "退款政策" })));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: { code: "rag_embedding_unavailable", message: "知识库向量服务暂时不可用。" },
+    });
+  });
+
   it("maps authentication failures without exposing backend details", async () => {
     vi.stubGlobal(
       "fetch",

@@ -74,6 +74,18 @@ def test_chunk_policy_text_ignores_empty_paragraphs() -> None:
     assert [chunk.chunk_index for chunk in chunks] == [0, 1]
 
 
+def test_chunk_policy_text_keeps_markdown_heading_with_following_body() -> None:
+    chunks = chunk_policy_text(
+        "rag-smoke-policy.md",
+        "# 退款政策\n\n订单签收后七天内可以申请退款。",
+    )
+
+    assert [chunk.content for chunk in chunks] == [
+        "# 退款政策\n\n订单签收后七天内可以申请退款。"
+    ]
+    assert all(chunk.content.strip() != "# 退款政策" for chunk in chunks)
+
+
 def test_chunk_policy_text_preserves_page_provenance_in_chunk_and_id() -> None:
     page_one = chunk_policy_text(
         "refund-policy-v1",

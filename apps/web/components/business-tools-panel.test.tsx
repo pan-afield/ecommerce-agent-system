@@ -1,0 +1,105 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { useReducedMotionMock } = vi.hoisted(() => ({
+  useReducedMotionMock: vi.fn(),
+}));
+
+vi.mock("@/components/order-lookup", () => ({
+  OrderLookup: () => <input aria-label="订单工具草稿" />,
+}));
+
+vi.mock("@/components/knowledge-search", () => ({
+  KnowledgeSearch: () => <input aria-label="知识库工具草稿" />,
+}));
+
+vi.mock("motion/react", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, useReducedMotion: useReducedMotionMock };
+});
+
+import { BusinessToolsPanel, type BusinessTool } from "./business-tools-panel";
+
+function PanelHarness({ initiallyOpen = true }: { initiallyOpen?: boolean }) {
+  const [activeTool, setActiveTool] = useState<BusinessTool>("order");
+  const [isOpen, setIsOpen] = useState(initiallyOpen);
+
+  return (
+    <BusinessToolsPanel
+      activeTool={activeTool}
+      approvalDemoEnabled={false}
+      isOpen={isOpen}
+      onClose={() => setIsOpen(false)}
+      onSelectTool={(tool) => {
+        setActiveTool(tool);
+        setIsOpen(true);
+      }}
+    />
+  );
+}
+
+describe("BusinessToolsPanel", () => {
+  beforeEach(() => {
+    useReducedMotionMock.mockReset();
+    useReducedMotionMock.mockReturnValue(false);
+  });
+
+  it("switches tabs without losing tool state", async () => {
+    const user = userEvent.setup();
+    render(<PanelHarness />);
+
+    const orderTab = screen.getByRole("tab", { name: "订单查询" });
+    const knowledgeTab = screen.getByRole("tab", { name: "知识库" });
+    expect(orderTab).toHaveAttribute("aria-selected", "true");
+
+    const orderDraft = screen.getByRole("textbox", { name: "订单工具草稿" });
+    await user.type(orderDraft, "order-demo-001");
+    await user.click(knowledgeTab);
+
+    expect(knowledgeTab).toHaveAttribute("aria-selected", "true");
+    expect(document.getElementById("order-tool-panel")).toHaveAttribute("hidden");
+    expect(document.getElementById("knowledge-tool-panel")).not.toHaveAttribute("hidden");
+
+    await user.click(orderTab);
+    expect(screen.getByRole("textbox", { name: "订单工具草稿" })).toHaveValue(
+      "order-demo-001",
+    );
+  });
+
+  it("supports keyboard tab switching", async () => {
+    const user = userEvent.setup();
+    render(<PanelHarness />);
+
+    const orderTab = screen.getByRole("tab", { name: "订单查询" });
+    orderTab.focus();
+    await user.keyboard("{ArrowRight}");
+
+    expect(screen.getByRole("tab", { name: "知识库" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "知识库" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("closes the narrow-screen drawer with Escape", async () => {
+    const user = userEvent.setup();
+    render(<PanelHarness />);
+
+    await user.keyboard("{Escape}");
+
+    expect(document.getElementById("business-tools-panel")).toHaveClass("hidden");
+  });
+
+  it("exposes reduced-motion mode without removing tool content", () => {
+    useReducedMotionMock.mockReturnValue(true);
+    render(<PanelHarness />);
+
+    expect(document.getElementById("business-tools-panel")).toHaveAttribute(
+      "data-motion-mode",
+      "reduced",
+    );
+    expect(screen.getByRole("textbox", { name: "订单工具草稿" })).toBeInTheDocument();
+  });
+});

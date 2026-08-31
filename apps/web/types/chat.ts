@@ -1,5 +1,5 @@
 import type { OrderDetail } from "@/types/order";
-import type { KnowledgeCitation } from "@/types/rag";
+import type { KnowledgeCitation, RagErrorCode } from "@/types/rag";
 
 export const CHAT_MESSAGE_MAX_LENGTH = 2_000;
 export const CHAT_CONTEXT_ID_MAX_LENGTH = 128;
@@ -29,7 +29,11 @@ export const CLIENT_CHAT_ERROR_CODES = [
 export type BackendChatErrorCode = (typeof BACKEND_CHAT_ERROR_CODES)[number];
 export type ProxyChatErrorCode = (typeof PROXY_CHAT_ERROR_CODES)[number];
 export type ClientChatErrorCode = (typeof CLIENT_CHAT_ERROR_CODES)[number];
-export type ChatErrorCode = BackendChatErrorCode | ProxyChatErrorCode | ClientChatErrorCode;
+export type ChatErrorCode =
+  | BackendChatErrorCode
+  | ProxyChatErrorCode
+  | ClientChatErrorCode
+  | RagErrorCode;
 
 export interface ChatRequest {
   message: string;

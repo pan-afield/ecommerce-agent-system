@@ -9,6 +9,11 @@ import {
   type ChatStreamAssistantEvent,
 } from "@/types/chat";
 import { isRagSearchResponse } from "@/lib/rag-contract";
+import {
+  BACKEND_RAG_ERROR_CODES,
+  CLIENT_RAG_ERROR_CODES,
+  PROXY_RAG_ERROR_CODES,
+} from "@/types/rag";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -59,6 +64,9 @@ export function isChatErrorCode(value: unknown): value is ChatErrorCode {
     ...BACKEND_CHAT_ERROR_CODES,
     ...PROXY_CHAT_ERROR_CODES,
     ...CLIENT_CHAT_ERROR_CODES,
+    ...BACKEND_RAG_ERROR_CODES,
+    ...PROXY_RAG_ERROR_CODES,
+    ...CLIENT_RAG_ERROR_CODES,
   ].includes(value as ChatErrorCode);
 }
 
@@ -73,5 +81,9 @@ export function isChatError(value: unknown): value is ChatError {
 }
 
 export function isBackendChatError(value: unknown): value is ChatError {
-  return isChatError(value) && isBackendChatErrorCode(value.error.code);
+  return (
+    isChatError(value) &&
+    (isBackendChatErrorCode(value.error.code) ||
+      (BACKEND_RAG_ERROR_CODES as readonly string[]).includes(value.error.code))
+  );
 }

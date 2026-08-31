@@ -29,7 +29,9 @@ export function KnowledgeEvidence({ citations, compact = false }: KnowledgeEvide
           <FileText className="size-3.5 text-accent" aria-hidden="true" />
           <h4 className="text-xs font-bold text-ink">知识库证据</h4>
         </div>
-        <span className="font-mono text-[10px] text-ink-muted">{citations.length} SOURCES</span>
+        <span className="font-mono text-[10px] text-ink-muted">
+          {citations.length} 条证据
+        </span>
       </div>
       <ol className="divide-y divide-line">
         {citations.map((citation, index) => (
@@ -69,11 +71,11 @@ export function KnowledgeEvidence({ citations, compact = false }: KnowledgeEvide
               <div className="ml-5 mt-2 space-y-2 border-l-2 border-line-strong pl-3 text-xs text-ink-muted">
                 <p className="whitespace-pre-wrap leading-5">{citation.content}</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px]">
-                  <span className="inline-flex items-center gap-1">
-                    <Hash className="size-3" aria-hidden="true" />
-                    {citation.chunk_id}
+                  <span className="flex min-w-0 items-start gap-1">
+                    <Hash className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+                    <span className="min-w-0 break-all">{citation.chunk_id}</span>
                   </span>
-                  <span>相关度 {citation.score.toFixed(4)}</span>
+                  <span>融合排序分 {citation.score.toFixed(4)}</span>
                 </div>
               </div>
             </details>

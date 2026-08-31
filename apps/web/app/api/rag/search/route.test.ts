@@ -82,6 +82,23 @@ describe("GET /api/rag/search", () => {
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("internal-token");
   });
 
+  it.each([
+    ["rag_embedding_unavailable", "知识库向量服务暂时不可用。"],
+    ["rag_database_incompatible", "知识库向量数据库配置不兼容。"],
+  ] as const)("preserves the local embedding error %s", async (code, message) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ error: { code, message } }, 503),
+      ),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: { code, message } });
+  });
+
   it("normalizes network, timeout-like, and non-JSON upstream failures", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
