@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage
@@ -9,7 +9,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import Checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
+from app.rag.citations import KnowledgeCitation
 from app.services.chat import ChatResult, ChatService, EmptyChatResponseError
 
 TEST_USER_ID = "demo-user-li"
@@ -121,6 +123,128 @@ async def test_chat_service_passes_rag_prompt_to_graph_message() -> None:
     )
 
     assert chat_model.received_messages == [[("human", rag_prompt)]]
+
+
+async def test_chat_service_builds_rag_only_inside_general_graph_branch() -> None:
+    chat_model = FakeChatModel(response="根据政策回答。")
+    citation = KnowledgeCitation(
+        source_id="refund-policy.md",
+        chunk_id="r" * 64,
+        page_number=None,
+        content="订单签收后七天内可以申请退款。",
+        score=0.02,
+    )
+    rag_calls: list[str] = []
+
+    async def fake_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        rag_calls.append(message)
+        return "RAG_PROMPT::退款政策", [citation]
+
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        rag_context_builder=fake_rag_context,
+    )
+
+    result = await service.reply("退款政策", user_id=TEST_USER_ID)
+
+    assert rag_calls == ["退款政策"]
+    assert result.citations == [citation]
+    assert chat_model.received_messages == [[("human", "RAG_PROMPT::退款政策")]]
+
+
+async def test_chat_service_switches_from_pending_order_to_knowledge_topic() -> None:
+    chat_model = FakeChatModel(response="根据政策回答。")
+    citation = KnowledgeCitation(
+        source_id="refund-policy.md",
+        chunk_id="r" * 64,
+        page_number=None,
+        content="订单签收后七天内可以申请退款。",
+        score=0.02,
+    )
+    rag_calls: list[str] = []
+    router_calls: list[tuple[str, str | None]] = []
+
+    async def fake_intent_router(
+        message: str,
+        pending_intent: str | None,
+    ) -> Literal["order", "non_action"]:
+        router_calls.append((message, pending_intent))
+        if message == "订单":
+            return "order"
+        return "non_action"
+
+    async def fake_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        rag_calls.append(message)
+        return "RAG_PROMPT::退款政策", [citation]
+
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        checkpointer=InMemorySaver(),
+        rag_context_builder=fake_rag_context,
+        intent_router=fake_intent_router,
+    )
+
+    first_result = await service.reply(
+        "订单",
+        user_id=TEST_USER_ID,
+        thread_id="thread-switch-topic",
+    )
+    policy_result = await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-switch-topic",
+    )
+    await service.reply(
+        "你好",
+        user_id=TEST_USER_ID,
+        thread_id="thread-switch-topic",
+    )
+
+    assert first_result.citations == []
+    assert router_calls == [
+        ("订单", None),
+        ("退款政策", "order"),
+        ("你好", None),
+    ]
+    assert rag_calls == ["退款政策", "你好"]
+    assert policy_result.citations == [citation]
+    assert chat_model.received_messages[-1][-1] == (
+        "human",
+        "RAG_PROMPT::退款政策",
+    )
+
+
+async def test_chat_service_empty_retrieval_uses_original_general_message() -> None:
+    chat_model = FakeChatModel(response="你好，请问有什么可以帮你？")
+    rag_calls: list[str] = []
+
+    async def route_non_action(
+        message: str,
+        pending_intent: str | None,
+    ) -> Literal["order", "non_action"]:
+        del message, pending_intent
+        return "non_action"
+
+    async def fake_empty_rag_context(
+        message: str,
+    ) -> tuple[str | None, list[KnowledgeCitation]]:
+        rag_calls.append(message)
+        return None, []
+
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="gpt-test-model",
+        rag_context_builder=fake_empty_rag_context,
+        intent_router=route_non_action,
+    )
+
+    result = await service.reply("你好", user_id=TEST_USER_ID)
+
+    assert rag_calls == ["你好"]
+    assert result.citations == []
+    assert chat_model.received_messages == [[("human", "你好")]]
 
 
 async def test_chat_service_passes_rag_prompt_through_checkpointed_thread() -> None:
@@ -360,6 +484,84 @@ async def test_chat_service_reuses_completed_request_in_same_thread() -> None:
         ("human", "同一条消息"),
         ("ai", "首次回复。"),
     ]
+
+
+async def test_chat_service_retry_restores_citations_for_original_request() -> None:
+    async def fake_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        citation = KnowledgeCitation(
+            source_id=f"policy-{message}",
+            chunk_id=("a" if message == "退款政策" else "b") * 64,
+            page_number=None,
+            content=f"证据-{message}",
+            score=0.02,
+        )
+        return f"RAG_PROMPT::{message}", [citation]
+
+    service = ChatService(
+        chat_model=FakeChatModel(response="根据政策回答。"),
+        model_name="gpt-test-model",
+        checkpointer=InMemorySaver(),
+        rag_context_builder=fake_rag_context,
+    )
+
+    first_result = await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-rag-idempotency",
+        request_id="request-refund",
+    )
+    await service.reply(
+        "配送政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-rag-idempotency",
+        request_id="request-shipping",
+    )
+    retried_result = await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-rag-idempotency",
+        request_id="request-refund",
+    )
+
+    assert retried_result == first_result
+
+
+async def test_chat_service_checkpoint_uses_strictly_serializable_citations() -> None:
+    citation = KnowledgeCitation(
+        source_id="refund-policy.md",
+        chunk_id="c" * 64,
+        page_number=1,
+        content="签收后七天内可以申请退款。",
+        score=0.02,
+    )
+
+    async def fake_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        return f"RAG_PROMPT::{message}", [citation]
+
+    checkpointer = InMemorySaver(
+        serde=JsonPlusSerializer(allowed_msgpack_modules=None),
+    )
+    service = ChatService(
+        chat_model=FakeChatModel(response="根据政策回答。"),
+        model_name="gpt-test-model",
+        checkpointer=checkpointer,
+        rag_context_builder=fake_rag_context,
+    )
+
+    first_result = await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-strict-citations",
+        request_id="request-refund",
+    )
+    retried_result = await service.reply(
+        "退款政策",
+        user_id=TEST_USER_ID,
+        thread_id="thread-strict-citations",
+        request_id="request-refund",
+    )
+
+    assert retried_result == first_result
 
 
 async def test_chat_service_scopes_request_id_to_thread() -> None:

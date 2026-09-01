@@ -92,18 +92,19 @@ V0.5 已完成并验收：
 当前 V0.5 完成度为 **100%**。审批通过只表示业务审批完成，不代表支付渠道已经执行退款；
 真实支付副作用、正式 RBAC、多审批人队列和任务执行可靠性不在本版本范围。
 
-V0.6 后端实现、自动化验证和真实本地模型人工验收已完成：
+V0.6 后端实现、自动化验证和浏览器人工验收已完成：
 
 - 文本/PDF 稳定切片，保留 `source_id`、`page_number`、`chunk_id`。
 - 本地 LlamaIndex + sentence-transformers + `BAAI/bge-m3`，RAG 不依赖 OpenAI Embeddings API。
 - pgvector 1024 维列、embedding 模型身份、增量幂等导入和原子全量 rebuild。
 - 语义检索、关键词检索、RRF 稳定融合及 citations。
-- `/v1/rag/search`、普通 chat 和 SSE 的 RAG 接入与稳定错误映射。
+- `/v1/rag/search` 保持显式检索；普通 chat 和 SSE 先由 Graph 判断意图，只有知识分支执行 RAG 并返回 citations，订单分支保留原始消息且不依赖 RAG。
 - CLI 支持 `.txt/.md/.pdf` 多文件导入和 `--rebuild`。
-- 后端完整验证为 **366 passed**，包含 8 个隔离 PostgreSQL 集成测试；Ruff 与变更文件 Mypy strict 通过。
+- 聊天编排修复后验证为 **381 passed, 8 skipped**，跳过项为本轮未连接的隔离 PostgreSQL 集成测试；Ruff 与 10 个变更 Python 文件 Mypy strict 通过。此前 **366 passed** 中的 8 个数据库集成结果仍保留为历史验收证据。
 - 人工验收确认无 OpenAI key 时 RAG 独立可用；质量修复后真实 `BAAI/bge-m3` 重建为 4 个“标题 + 正文”块，重复增量导入 0 块；中文、英文查询返回正文 citations，“苹果”返回空 citations。
+- 浏览器复验确认订单追问和订单 Tool 路径不返回 citations；同一 thread 在 Tool 完成后或等待订单编号时切换到“退款政策”，均能进入 RAG 并返回实际使用的证据。
 
-当前 V0.6 完成度为 **100%**。独立 RAG Agent 节点、向量/全文索引、后台 ingestion Worker、文档权限和大规模检索评估属于后续增强；自动测试继续使用 Fake，不下载真实模型。
+当前 V0.6 完成度为 **100%**。独立 RAG Agent、向量/全文索引、后台 ingestion Worker、文档权限和大规模检索评估属于后续增强；自动测试继续使用 Fake，不下载真实模型。
 
 ## 3. 用户、会话与认证现状
 
@@ -148,8 +149,8 @@ V0.4 已在 Router、订单 Tool Calling 和 SSE 之前完成可信身份接入�
 | 已完成 | V0.1～V0.3 | 完成聊天、订单和持久会话基础 |
 | 已完成 | V0.4 | 完成可信身份、订单 Agent 与 SSE 闭环 |
 | 已完成 | V0.5 | 完成退款风控和人工审批闭环 |
-| 已完成 | V0.6 | 本地多语言 RAG、文档导入与 citations |
-| 当前 / 第 1～4 周 | 完成 V0.7 | 完成企业级可靠性加固 |
+| 已完成 | V0.6 | 完成本地多语言 RAG、文档导入、citations 与条件式聊天编排 |
+| 下一阶段 / 第 1～4 周 | 完成 V0.7 | 完成企业级可靠性加固 |
 
 关键里程碑：
 

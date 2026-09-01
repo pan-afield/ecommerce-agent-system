@@ -1,15 +1,19 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.adapters.openai_chat import OpenAIChatAdapter
+from app.agents.support_graph import RagContextBuilder
 from app.api.exception_handlers import chat_error_handler
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
-from app.rag.local_embeddings import create_local_embeddings
+from app.rag.citations import KnowledgeCitation
+from app.rag.local_embeddings import RagEmbeddingError, create_local_embeddings
+from app.rag.service import build_rag_context, build_rag_prompt
+from app.rag.vector_store import RagVectorDimensionError
 from app.services.chat import ChatError, ChatService
 from app.services.health import database_is_ready
 from app.tools.orders import build_lookup_order_tool
@@ -33,6 +37,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.rag_embeddings = create_local_embeddings(app_settings)
             except Exception:
                 app.state.rag_embeddings = None
+
+            rag_context_builder: RagContextBuilder | None = None
+            if app.state.rag_embeddings is not None:
+
+                async def build_rag_context_builder(
+                    message: str,
+                ) -> tuple[str | None, list[KnowledgeCitation]]:
+                    try:
+                        context = await build_rag_context(
+                            engine,
+                            app.state.rag_embeddings,
+                            message,
+                            embedding_model=app_settings.rag_embedding_model,
+                        )
+                        if not context.citations:
+                            return None, []
+                        prompt = build_rag_prompt(
+                            message,
+                            context.citations,
+                        )
+                        return (prompt, context.citations)
+
+                    except RagEmbeddingError as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="知识库向量服务暂时不可用。",
+                        ) from error
+                    except RagVectorDimensionError as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="知识库向量数据库配置不兼容。",
+                        ) from error
+                    except ValueError as error:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="无法构建 RAG 上下文。",
+                        ) from error
+
+                rag_context_builder = build_rag_context_builder
 
             if app_settings.openai_api_key is None:
                 yield
@@ -61,6 +104,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     model_name=app_settings.openai_agent_model,
                     checkpointer=checkpointer,
                     order_tools=order_tools,
+                    rag_context_builder=rag_context_builder,
+                    intent_router=chat_model.route_intent,
                 )
                 yield
         finally:

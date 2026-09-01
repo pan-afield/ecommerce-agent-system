@@ -14,6 +14,7 @@ from app.agents.support_graph import (
     route_intent,
     select_model_message,
 )
+from app.rag.citations import KnowledgeCitation
 
 TEST_USER_ID = "demo-user-li"
 
@@ -127,6 +128,30 @@ def test_normalize_message_uses_rag_prompt_when_present() -> None:
     ) == "general"
 
 
+def test_normalize_message_keeps_original_order_followup_over_rag_prompt() -> None:
+    result = normalize_message(
+        SupportState(
+            user_id=TEST_USER_ID,
+            user_message="order-demo-001",
+            pending_intent="order",
+            rag_prompt="知识库证据：不应替换订单编号",
+        )
+    )
+
+    messages = result["messages"]
+    assert isinstance(messages, list)
+    assert messages[0].text == "order-demo-001"
+    assert route_intent(
+        {
+            "user_id": TEST_USER_ID,
+            "user_message": "order-demo-001",
+            "normalized_message": "order-demo-001",
+            "pending_intent": "order",
+            "rag_prompt": "知识库证据：不应替换订单编号",
+        }
+    ) == "order_continue"
+
+
 async def test_support_graph_passes_state_between_nodes() -> None:
     chat_model = FakeChatModel(response="  支持七天无理由退货。  ")
     support_graph = build_support_graph(chat_model.generate_reply)
@@ -206,6 +231,83 @@ async def test_order_intent_requests_identifier_without_calling_model() -> None:
         "我可以帮你查询订单，请提供订单编号。",
     ]
     assert chat_model.received_messages == []
+
+
+@pytest.mark.asyncio
+async def test_general_branch_builds_rag_context_before_model() -> None:
+    chat_model = FakeChatModel(response="根据政策回答。")
+    citation = KnowledgeCitation(
+        source_id="refund-policy.md",
+        chunk_id="r" * 64,
+        page_number=None,
+        content="订单签收后七天内可以申请退款。",
+        score=0.02,
+    )
+    rag_calls: list[str] = []
+
+    async def fake_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        rag_calls.append(message)
+        return "RAG_PROMPT::退款政策", [citation]
+
+    support_graph = build_support_graph(
+        chat_model.generate_reply,
+        rag_context_builder=fake_rag_context,
+    )
+
+    result = await support_graph.ainvoke(
+        SupportState(user_id=TEST_USER_ID, user_message="退款政策")
+    )
+
+    assert rag_calls == ["退款政策"]
+    assert result["rag_prompt"] == "RAG_PROMPT::退款政策"
+    assert result["rag_citations"] == [
+        {
+            "source_id": "refund-policy.md",
+            "chunk_id": "r" * 64,
+            "page_number": None,
+            "content": "订单签收后七天内可以申请退款。",
+            "score": 0.02,
+        }
+    ]
+    assert chat_model.received_messages == [[("human", "RAG_PROMPT::退款政策")]]
+
+
+@pytest.mark.asyncio
+async def test_order_branches_do_not_build_rag_context() -> None:
+    chat_model = FakeChatModel(response="不应调用模型。")
+    rag_called = False
+
+    async def unexpected_rag_context(message: str) -> tuple[str, list[KnowledgeCitation]]:
+        nonlocal rag_called
+        rag_called = True
+        raise AssertionError("order branches must not call RAG")
+
+    support_graph = build_support_graph(
+        chat_model.generate_reply,
+        checkpointer=InMemorySaver(),
+        rag_context_builder=unexpected_rag_context,
+        order_tools=[fake_lookup_order],
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "thread-order-rag"}}
+
+    first = await support_graph.ainvoke(
+        SupportState(user_id=TEST_USER_ID, user_message="查询订单"),
+        config=config,
+    )
+    followup = await support_graph.ainvoke(
+        SupportState(user_id=TEST_USER_ID, user_message="order-demo-001"),
+        config=config,
+    )
+
+    assert rag_called is False
+    assert first["response"] == "我可以帮你查询订单，请提供订单编号。"
+    assert followup["rag_citations"] == []
+    assert chat_model.received_messages[-1][-1] == ("human", "order-demo-001")
+    assert all(
+        message_text != "知识库证据：不应替换订单编号"
+        for messages in chat_model.received_messages
+        for _, message_text in messages
+    )
 
 
 async def test_order_intent_retry_reuses_completed_response() -> None:
@@ -317,6 +419,7 @@ async def test_order_graph_executes_tool_and_returns_to_model() -> None:
     retried = await support_graph.ainvoke(initial_state, config=config)
 
     assert result["response"] == "查询结果：demo-user-li:order-demo-001"
+    assert result["pending_intent"] is None
     assert retried["response"] == result["response"]
     assert len(model_calls) == 2
     assert [message.type for message in model_calls[1]] == [
@@ -348,7 +451,7 @@ async def test_pending_order_intent_does_not_leak_to_another_thread() -> None:
         config=other_thread,
     )
 
-    assert "pending_intent" not in other_result
+    assert other_result.get("pending_intent") is None
     assert other_result["response"] == "一般问题回复。"
     assert chat_model.received_messages == [
         [("human", "EC-20260810-001")]

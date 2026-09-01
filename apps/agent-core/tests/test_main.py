@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.config import Settings
 from app.main import create_app
+from app.rag.citations import KnowledgeCitation
+from app.rag.service import RagContext
 
 
 async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
@@ -26,11 +28,25 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
         patch("app.main.AsyncPostgresSaver") as saver_type,
         patch("app.main.build_lookup_order_tool") as tool_builder,
         patch("app.main.create_local_embeddings") as embeddings_builder,
+        patch("app.main.build_rag_context", new_callable=AsyncMock) as context_builder,
+        patch("app.main.build_rag_prompt") as prompt_builder,
     ):
         fake_order_tool = MagicMock()
         fake_embeddings = MagicMock()
+        citation = KnowledgeCitation(
+            source_id="refund-policy.md",
+            chunk_id="r" * 64,
+            page_number=1,
+            content="签收后七天内可以申请退款。",
+            score=0.02,
+        )
         tool_builder.return_value = fake_order_tool
         embeddings_builder.return_value = fake_embeddings
+        context_builder.return_value = RagContext(
+            query="退款政策",
+            citations=[citation],
+        )
+        prompt_builder.return_value = "RAG_PROMPT::退款政策"
         saver_type.from_conn_string.return_value = checkpointer_context
         application = create_app(settings)
 
@@ -39,6 +55,32 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
         async with application.router.lifespan_context(application):
             service_type.assert_called_once()
             checkpointer.setup.assert_awaited_once()
+            rag_context_builder = service_type.call_args.kwargs["rag_context_builder"]
+            assert rag_context_builder is not None
+            prompt, citations = await rag_context_builder("退款政策")
+
+            assert prompt == "RAG_PROMPT::退款政策"
+            assert citations == [citation]
+            context_builder.assert_awaited_once_with(
+                application.state.database_engine,
+                fake_embeddings,
+                "退款政策",
+                embedding_model=settings.rag_embedding_model,
+            )
+            prompt_builder.assert_called_once_with("退款政策", [citation])
+
+            context_builder.reset_mock()
+            prompt_builder.reset_mock()
+            context_builder.return_value = RagContext(
+                query="你好",
+                citations=[],
+            )
+
+            empty_prompt, empty_citations = await rag_context_builder("你好")
+
+            assert empty_prompt is None
+            assert empty_citations == []
+            prompt_builder.assert_not_called()
 
     assert service_type.call_args is not None
     assert service_type.call_args.kwargs["checkpointer"] is checkpointer
@@ -50,6 +92,10 @@ async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
     assert application.state.rag_embeddings is fake_embeddings
     tool_builder.assert_called_once_with(application.state.database_engine)
     assert service_type.call_args.kwargs["order_tools"] == [fake_order_tool]
+    assert (
+        service_type.call_args.kwargs["intent_router"]
+        is adapter_type.return_value.route_intent
+    )
 
 
 async def test_lifespan_initializes_rag_without_openai_chat_configuration() -> None:

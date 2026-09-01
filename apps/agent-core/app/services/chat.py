@@ -1,7 +1,7 @@
 import asyncio
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from langchain_core.messages import AIMessage, AnyMessage
@@ -10,9 +10,12 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.agents.support_graph import (
+    IntentRouter,
+    RagContextBuilder,
     SupportState,
     build_support_graph,
 )
+from app.rag.citations import KnowledgeCitation
 
 
 class ChatError(Exception):
@@ -55,6 +58,7 @@ class ChatModel(Protocol):
 class ChatResult:
     content: str
     model: str
+    citations: list[KnowledgeCitation] = field(default_factory=list)
 
 
 class ChatService:
@@ -65,15 +69,21 @@ class ChatService:
         checkpointer: BaseCheckpointSaver[Any] | None = None,
         *,
         order_tools: Sequence[BaseTool] = (),
+        rag_context_builder: RagContextBuilder | None = None,
+        intent_router: IntentRouter | None = None,
     ) -> None:
         self._stateless_graph = build_support_graph(
             chat_model.generate_reply,
             order_tools=order_tools,
+            rag_context_builder=rag_context_builder,
+            intent_router=intent_router,
         )
         self._checkpointed_graph = build_support_graph(
             chat_model.generate_reply,
             checkpointer=checkpointer,
             order_tools=order_tools,
+            rag_context_builder=rag_context_builder,
+            intent_router=intent_router,
         )
         self._model_name = model_name
         # 上协程锁
@@ -120,4 +130,14 @@ class ChatService:
         return ChatResult(
             content=content,
             model=self._model_name,
+            citations=[
+                KnowledgeCitation(
+                    source_id=citation["source_id"],
+                    chunk_id=citation["chunk_id"],
+                    page_number=citation["page_number"],
+                    content=citation["content"],
+                    score=citation["score"],
+                )
+                for citation in state.get("rag_citations", [])
+            ],
         )

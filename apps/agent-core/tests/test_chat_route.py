@@ -1,20 +1,20 @@
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from httpx import ASGITransport, AsyncClient, Response
+from langchain_core.messages import AIMessage, AnyMessage
+from langchain_core.tools import BaseTool
 
 from app.api.dependencies import get_chat_service
 from app.core.config import Settings
 from app.main import create_app
 from app.rag.citations import KnowledgeCitation
-from app.rag.local_embeddings import RagEmbeddingError
-from app.rag.service import RagContext
-from app.rag.vector_store import RagVectorDimensionError
 from app.services.chat import (
     ChatProviderTimeoutError,
     ChatResult,
@@ -22,6 +22,23 @@ from app.services.chat import (
 )
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+
+
+class FakeRouteChatModel:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.received_messages: list[list[tuple[str, str]]] = []
+
+    async def generate_reply(
+        self,
+        messages: Sequence[AnyMessage],
+        tools: Sequence[BaseTool] | None = None,
+    ) -> AIMessage:
+        del tools
+        self.received_messages.append(
+            [(message.type, message.text) for message in messages]
+        )
+        return AIMessage(content=self.response)
 
 
 def make_auth_headers(sub: str = "demo-user-li") -> dict[str, str]:
@@ -45,10 +62,8 @@ def create_test_app(service: ChatService) -> FastAPI:
         _env_file=None,
     )
     app = create_app(settings)
-    # These are normally initialized by the application lifespan.  Route tests
-    # bypass the lifespan so they can inject a fake ChatService directly.
-    app.state.rag_embeddings = None
-    app.state.database_engine = object()
+    # Route tests bypass the lifespan and inject a fake ChatService directly.
+    # No RAG application state is needed because intent routing now owns retrieval.
     app.dependency_overrides[get_chat_service] = lambda: service
     return app
 
@@ -87,6 +102,85 @@ async def post_chat(
         )
 
 
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
+@pytest.mark.asyncio
+async def test_order_http_paths_skip_unavailable_rag(path: str) -> None:
+    async def unavailable_rag(
+        message: str,
+    ) -> tuple[str, list[KnowledgeCitation]]:
+        raise AssertionError(f"order path must not call RAG for {message}")
+
+    chat_model = FakeRouteChatModel(response="不应调用模型。")
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="test-model",
+        rag_context_builder=unavailable_rag,
+    )
+    app = create_test_app(service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            path,
+            json={"message": "订单"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    if path.endswith("/stream"):
+        assistant_event = response.text.split("\n", maxsplit=2)[1]
+        response_data = json.loads(assistant_event.removeprefix("data: "))
+    else:
+        response_data = response.json()
+    assert response_data["citations"] == []
+    assert chat_model.received_messages == []
+
+
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
+@pytest.mark.asyncio
+async def test_knowledge_http_paths_use_graph_rag_result(path: str) -> None:
+    citation = KnowledgeCitation(
+        source_id="refund-policy.md",
+        chunk_id="r" * 64,
+        page_number=1,
+        content="签收后七天内可以申请退款。",
+        score=0.02,
+    )
+    rag_calls: list[str] = []
+
+    async def fake_rag_context(
+        message: str,
+    ) -> tuple[str, list[KnowledgeCitation]]:
+        rag_calls.append(message)
+        return "RAG_PROMPT::退款政策", [citation]
+
+    chat_model = FakeRouteChatModel(response="根据政策，签收后七天内可申请退款。")
+    service = ChatService(
+        chat_model=chat_model,
+        model_name="test-model",
+        rag_context_builder=fake_rag_context,
+    )
+    app = create_test_app(service)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            path,
+            json={"message": "退款政策"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    if path.endswith("/stream"):
+        assistant_event = response.text.split("\n", maxsplit=2)[1]
+        response_data = json.loads(assistant_event.removeprefix("data: "))
+    else:
+        response_data = response.json()
+    assert response_data["citations"][0]["source_id"] == "refund-policy.md"
+    assert rag_calls == ["退款政策"]
+    assert chat_model.received_messages == [[("human", "RAG_PROMPT::退款政策")]]
+
+
 @pytest.mark.asyncio
 async def test_chat_returns_assistant_response() -> None:
     service = AsyncMock(spec=ChatService)
@@ -111,49 +205,30 @@ async def test_chat_returns_assistant_response() -> None:
         "demo-user-li",
         None,
         request_id=None,
-        rag_prompt=None,
     )
 
 
 @pytest.mark.asyncio
-async def test_chat_without_embeddings_skips_rag(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_chat_route_does_not_require_rag_application_state() -> None:
     service = AsyncMock(spec=ChatService)
     service.reply.return_value = ChatResult(
         content="收到。",
         model="test-model",
     )
     app = create_test_app(service)
-    build_context = AsyncMock()
-    monkeypatch.setattr(
-        "app.api.routes.chat.build_rag_context",
-        build_context,
-    )
-
     response = await post_chat(app, "你好")
 
     assert response.status_code == 200
-    build_context.assert_not_awaited()
     service.reply.assert_awaited_once_with(
         "你好",
         "demo-user-li",
         None,
         request_id=None,
-        rag_prompt=None,
     )
 
 
 @pytest.mark.asyncio
-async def test_chat_with_embeddings_builds_and_forwards_rag_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = AsyncMock(spec=ChatService)
-    service.reply.return_value = ChatResult(
-        content="根据政策，退货期限为七天。",
-        model="test-model",
-    )
-    app = create_test_app(service)
-    app.state.rag_embeddings = object()
-
+async def test_chat_serializes_citations_returned_by_service() -> None:
     citation = KnowledgeCitation(
         source_id="policy.md",
         chunk_id="chunk-1",
@@ -161,14 +236,13 @@ async def test_chat_with_embeddings_builds_and_forwards_rag_prompt(
         content="签收后七天内可申请退货。",
         score=0.95,
     )
-    build_context = AsyncMock(
-        return_value=RagContext(query="退货政策", citations=[citation]),
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="根据政策，退货期限为七天。",
+        model="test-model",
+        citations=[citation],
     )
-    def build_prompt(query: str, citations: list[KnowledgeCitation]) -> str:
-        return f"RAG::{query}::{len(citations)}"
-
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
-    monkeypatch.setattr("app.api.routes.chat.build_rag_prompt", build_prompt)
+    app = create_test_app(service)
 
     response = await post_chat(app, "  退货政策  ")
 
@@ -182,49 +256,39 @@ async def test_chat_with_embeddings_builds_and_forwards_rag_prompt(
             "score": 0.95,
         }
     ]
-    build_context.assert_awaited_once_with(
-        app.state.database_engine,
-        app.state.rag_embeddings,
-        "退货政策",
-        embedding_model=app.state.settings.rag_embedding_model,
-    )
     service.reply.assert_awaited_once_with(
         "退货政策",
         "demo-user-li",
         None,
         request_id=None,
-        rag_prompt="RAG::退货政策::1",
     )
 
 
 @pytest.mark.asyncio
-async def test_chat_concurrent_requests_keep_rag_data_isolated(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_order_result_returns_no_citations() -> None:
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="我可以帮你查询订单，请提供订单编号。",
+        model="test-model",
+    )
+    app = create_test_app(service)
+
+    response = await post_chat(app, "订单")
+
+    assert response.status_code == 200
+    assert response.json()["citations"] == []
+    service.reply.assert_awaited_once_with(
+        "订单",
+        "demo-user-li",
+        None,
+        request_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_concurrent_requests_keep_service_results_isolated() -> None:
     service = AsyncMock(spec=ChatService)
     app = create_test_app(service)
-    app.state.rag_embeddings = object()
-
-    async def build_context(
-        engine: object,
-        embeddings: object,
-        query: str,
-        *,
-        embedding_model: str,
-    ) -> RagContext:
-        assert embedding_model == app.state.settings.rag_embedding_model
-        await asyncio.sleep(0)
-        citation = KnowledgeCitation(
-            source_id=f"policy-{query}",
-            chunk_id=f"chunk-{query}",
-            page_number=None,
-            content=f"证据-{query}",
-            score=0.9,
-        )
-        return RagContext(query=query, citations=[citation])
-
-    def build_prompt(query: str, citations: list[KnowledgeCitation]) -> str:
-        return f"PROMPT::{query}::{citations[0].source_id}"
 
     async def fake_reply(
         message: str,
@@ -234,12 +298,23 @@ async def test_chat_concurrent_requests_keep_rag_data_isolated(
         request_id: str | None = None,
         rag_prompt: str | None = None,
     ) -> ChatResult:
+        del user_id, thread_id, request_id, rag_prompt
         await asyncio.sleep(0)
-        return ChatResult(content=f"回答-{message}", model="test-model")
+        return ChatResult(
+            content=f"回答-{message}",
+            model="test-model",
+            citations=[
+                KnowledgeCitation(
+                    source_id=f"policy-{message}",
+                    chunk_id=f"chunk-{message}",
+                    page_number=None,
+                    content=f"证据-{message}",
+                    score=0.9,
+                )
+            ],
+        )
 
     service.reply.side_effect = fake_reply
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
-    monkeypatch.setattr("app.api.routes.chat.build_rag_prompt", build_prompt)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -259,23 +334,16 @@ async def test_chat_concurrent_requests_keep_rag_data_isolated(
     assert [response.status_code for response in responses] == [200, 200]
     assert responses[0].json()["citations"][0]["source_id"] == "policy-退款"
     assert responses[1].json()["citations"][0]["source_id"] == "policy-发货"
-    assert {call.kwargs["rag_prompt"] for call in service.reply.await_args_list} == {
-        "PROMPT::退款::policy-退款",
-        "PROMPT::发货::policy-发货",
-    }
 
 
 @pytest.mark.asyncio
-async def test_chat_maps_rag_value_error_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_returns_stable_rag_validation_error_from_service() -> None:
     service = AsyncMock(spec=ChatService)
-    app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    build_context = AsyncMock(
-        side_effect=ValueError("internal embedding detail"),
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="无法构建 RAG 上下文。",
     )
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+    app = create_test_app(service)
 
     response = await post_chat(app, "退货政策")
 
@@ -283,48 +351,39 @@ async def test_chat_maps_rag_value_error_without_calling_service(
     assert response.json() == {
         "detail": "无法构建 RAG 上下文。",
     }
-    assert "internal embedding detail" not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_chat_maps_embedding_failure_to_503_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_returns_stable_embedding_failure_from_service() -> None:
     service = AsyncMock(spec=ChatService)
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="知识库向量服务暂时不可用。",
+    )
     app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    sensitive_detail = "embedding dimension must be 1024"
-    build_context = AsyncMock(side_effect=RagEmbeddingError(sensitive_detail))
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
 
     response = await post_chat(app, "退货政策")
 
     assert response.status_code == 503
     assert response.json() == {"detail": "知识库向量服务暂时不可用。"}
-    assert sensitive_detail not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_chat_maps_vector_dimension_mismatch_to_503_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_returns_stable_vector_dimension_error_from_service() -> None:
     service = AsyncMock(spec=ChatService)
-    app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    sensitive_detail = (
-        "knowledge embedding column dimension mismatch: expected 1024, got 1536"
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="知识库向量数据库配置不兼容。",
     )
-    build_context = AsyncMock(side_effect=RagVectorDimensionError(sensitive_detail))
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+    app = create_test_app(service)
 
     response = await post_chat(app, "退货政策")
 
     assert response.status_code == 503
     assert response.json() == {"detail": "知识库向量数据库配置不兼容。"}
-    assert "1536" not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -356,21 +415,11 @@ async def test_chat_stream_returns_assistant_and_done_events() -> None:
         "demo-user-li",
         None,
         request_id=None,
-        rag_prompt=None,
     )
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_with_embeddings_forwards_rag_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = AsyncMock(spec=ChatService)
-    service.reply.return_value = ChatResult(
-        content="根据政策，退货期限为七天。",
-        model="test-model",
-    )
-    app = create_test_app(service)
-    app.state.rag_embeddings = object()
+async def test_chat_stream_serializes_citations_returned_by_service() -> None:
     citation = KnowledgeCitation(
         source_id="refund-policy-v1",
         chunk_id="chunk-1",
@@ -378,16 +427,13 @@ async def test_chat_stream_with_embeddings_forwards_rag_prompt(
         content="签收后七天内可申请退货。",
         score=0.95,
     )
-    build_context = AsyncMock(
-        return_value=RagContext(query="退货政策", citations=[citation]),
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="根据政策，退货期限为七天。",
+        model="test-model",
+        citations=[citation],
     )
-
-    def build_prompt(query: str, citations: list[KnowledgeCitation]) -> str:
-        return f"STREAM-RAG::{query}::{len(citations)}"
-
-    build_prompt_mock = Mock(side_effect=build_prompt)
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
-    monkeypatch.setattr("app.api.routes.chat.build_rag_prompt", build_prompt_mock)
+    app = create_test_app(service)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -412,31 +458,50 @@ async def test_chat_stream_with_embeddings_forwards_rag_prompt(
             }
         ],
     }
-    build_context.assert_awaited_once_with(
-        app.state.database_engine,
-        app.state.rag_embeddings,
-        "退货政策",
-        embedding_model=app.state.settings.rag_embedding_model,
-    )
-    build_prompt_mock.assert_called_once_with("退货政策", [citation])
     service.reply.assert_awaited_once_with(
         "退货政策",
         "demo-user-li",
         None,
         request_id=None,
-        rag_prompt="STREAM-RAG::退货政策::1",
     )
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_rag_value_error_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_stream_order_result_returns_no_citations() -> None:
     service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="我可以帮你查询订单，请提供订单编号。",
+        model="test-model",
+    )
     app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    build_context = AsyncMock(side_effect=ValueError("internal stream detail"))
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/stream",
+            json={"message": "订单"},
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assistant_event = response.text.split("\n", maxsplit=2)[1]
+    assert json.loads(assistant_event.removeprefix("data: "))["citations"] == []
+    service.reply.assert_awaited_once_with(
+        "订单",
+        "demo-user-li",
+        None,
+        request_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_returns_stable_rag_validation_error_from_service() -> None:
+    service = AsyncMock(spec=ChatService)
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="无法构建 RAG 上下文。",
+    )
+    app = create_test_app(service)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -448,20 +513,17 @@ async def test_chat_stream_maps_rag_value_error_without_calling_service(
 
     assert response.status_code == 422
     assert response.json() == {"detail": "无法构建 RAG 上下文。"}
-    assert "internal stream detail" not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_embedding_failure_to_503_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_stream_returns_stable_embedding_failure_from_service() -> None:
     service = AsyncMock(spec=ChatService)
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="知识库向量服务暂时不可用。",
+    )
     app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    sensitive_detail = "embedding model cache unavailable"
-    build_context = AsyncMock(side_effect=RagEmbeddingError(sensitive_detail))
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -473,22 +535,17 @@ async def test_chat_stream_maps_embedding_failure_to_503_without_calling_service
 
     assert response.status_code == 503
     assert response.json() == {"detail": "知识库向量服务暂时不可用。"}
-    assert sensitive_detail not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_vector_dimension_mismatch_to_503_without_calling_service(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_stream_returns_stable_vector_dimension_error_from_service() -> None:
     service = AsyncMock(spec=ChatService)
-    app = create_test_app(service)
-    app.state.rag_embeddings = object()
-    sensitive_detail = (
-        "knowledge embedding column dimension mismatch: expected 1024, got 1536"
+    service.reply.side_effect = HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="知识库向量数据库配置不兼容。",
     )
-    build_context = AsyncMock(side_effect=RagVectorDimensionError(sensitive_detail))
-    monkeypatch.setattr("app.api.routes.chat.build_rag_context", build_context)
+    app = create_test_app(service)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -500,8 +557,7 @@ async def test_chat_stream_maps_vector_dimension_mismatch_to_503_without_calling
 
     assert response.status_code == 503
     assert response.json() == {"detail": "知识库向量数据库配置不兼容。"}
-    assert "1536" not in response.text
-    service.reply.assert_not_awaited()
+    service.reply.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -543,7 +599,6 @@ async def test_chat_forwards_normalized_thread_id() -> None:
         "demo-user-li",
         "thread-1",
         request_id="request-1",
-        rag_prompt=None,
     )
 
 

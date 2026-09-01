@@ -1,13 +1,35 @@
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
+
+from app.rag.citations import KnowledgeCitation
+
+IntentRoute = Literal["order", "non_action"]
+
+IntentRouter = Callable[
+    [str, Literal["order"] | None],
+    Awaitable[IntentRoute],
+]
+
+
+class CitationState(TypedDict):
+    source_id: str
+    chunk_id: str
+    page_number: int | None
+    content: str
+    score: float
 
 
 class SupportState(TypedDict):
@@ -18,8 +40,10 @@ class SupportState(TypedDict):
     messages: NotRequired[Annotated[list[AnyMessage], add_messages]]
     request_id: NotRequired[str | None]
     completed_requests: NotRequired[dict[str, str]]
-    pending_intent: NotRequired[Literal["order"]]
+    pending_intent: NotRequired[Literal["order"] | None]
     rag_prompt: NotRequired[str | None]
+    rag_citations: NotRequired[list[CitationState]]
+    completed_request_citations: NotRequired[dict[str, list[CitationState]]]
 
 
 GenerateReply = Callable[
@@ -28,6 +52,11 @@ GenerateReply = Callable[
         Sequence[BaseTool] | None,
     ],
     Awaitable[AIMessage],
+]
+
+RagContextBuilder = Callable[
+    [str],
+    Awaitable[tuple[str | None, list[KnowledgeCitation]]],
 ]
 
 
@@ -62,7 +91,13 @@ def normalize_message(
     state: SupportState,
 ) -> dict[str, str | list[AnyMessage]]:
     normalized_message = state["user_message"].strip()
-    message_content = select_model_message(normalized_message, state.get("rag_prompt"))
+    if state.get("pending_intent") == "order":
+        message_content = normalized_message
+    else:
+        message_content = select_model_message(
+            normalized_message,
+            state.get("rag_prompt"),
+        )
     request_id = state.get("request_id")
     message_id = f"request:{request_id}:human" if request_id is not None else None
     return {
@@ -73,6 +108,7 @@ def normalize_message(
             )
         ],
         "normalized_message": normalized_message,
+        "rag_citations": [],
     }
 
 
@@ -92,28 +128,34 @@ def route_request(
 # 直接返回已完成请求的历史结果，实现请求级幂等。
 def reuse_completed_response(
     state: SupportState,
-) -> dict[str, str]:
+) -> dict[str, str | list[CitationState]]:
     request_id = state.get("request_id")
     assert request_id is not None
 
     completed_requests = state.get("completed_requests", {})
+    completed_citations = state.get("completed_request_citations", {})
+
     return {
         "response": completed_requests[request_id],
+        "rag_citations": list(completed_citations.get(request_id, [])),
     }
 
 
 # 缺少订单编号时先向用户追问，并记录待继续的订单意图。
 def request_order_identifier(
     state: SupportState,
-) -> dict[str, str | list[AnyMessage] | dict[str, str]]:
+) -> dict[str, str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]]]:
     response = "我可以帮你查询订单，请提供订单编号。"
-    update: dict[str, str | list[AnyMessage] | dict[str, str]] = {
+    update: dict[str, str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]]] = {
         "response": response,
         "messages": [AIMessage(content=response)],
     }
 
     request_id = state.get("request_id")
     if request_id is not None:
+        completed_citations = dict(state.get("completed_request_citations", {}))
+        completed_citations[request_id] = []
+        update["completed_request_citations"] = completed_citations
         completed_requests = dict(state.get("completed_requests", {}))
         completed_requests[request_id] = response
         update["completed_requests"] = completed_requests
@@ -144,26 +186,40 @@ def build_support_graph(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     *,
     order_tools: Sequence[BaseTool] = (),
+    rag_context_builder: RagContextBuilder | None = None,
+    intent_router: IntentRouter | None = None,
 ) -> CompiledStateGraph[SupportState, None, Any, Any]:
     # 普通问题只调用模型一次，并缓存带 request_id 的最终回复。
     async def generate_response(
         state: SupportState,
     ) -> dict[
         str,
-        str | list[AnyMessage] | dict[str, str],
+        str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]],
     ]:
         messages = state.get("messages")
         if messages is None:
             raise ValueError("messages must be set before generating a response")
 
+        model_messages = messages
+        rag_prompt = state.get("rag_prompt")
+
+        if rag_prompt:
+            model_messages = [
+                *messages[:-1],
+                HumanMessage(
+                    content=rag_prompt,
+                    id=messages[-1].id,
+                ),
+            ]
+
         response_message = await generate_reply(
-            messages,
+            model_messages,
             None,
         )
         response = response_message.text.strip()
         update: dict[
             str,
-            str | list[AnyMessage] | dict[str, str],
+            str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]],
         ] = {
             "response": response,
         }
@@ -176,6 +232,9 @@ def build_support_graph(
 
         request_id = state.get("request_id")
         if request_id is not None:
+            completed_citations = dict(state.get("completed_request_citations", {}))
+            completed_citations[request_id] = list(state.get("rag_citations", []))
+            update["completed_request_citations"] = completed_citations
             completed_requests = dict(state.get("completed_requests", {}))
             completed_requests[request_id] = response
             update["completed_requests"] = completed_requests
@@ -185,7 +244,7 @@ def build_support_graph(
     # 订单问题允许模型调用工具；工具完成后再次调用模型生成最终回复。
     async def generate_order_response(
         state: SupportState,
-    ) -> dict[str, str | list[AnyMessage] | dict[str, str]]:
+    ) -> dict[str, str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]] | None]:
         messages = state.get("messages")
         if messages is None:
             raise ValueError("messages must be set before generating an order response")
@@ -197,21 +256,78 @@ def build_support_graph(
         response = response_message.text.strip()
 
         response_message.content = response
-        update: dict[str, str | list[AnyMessage] | dict[str, str]] = {
+        update: dict[
+            str, str | list[AnyMessage] | dict[str, str] | dict[str, list[CitationState]] | None
+        ] = {
             "response": response,
             "messages": [response_message],
         }
 
         if response_message.tool_calls:
             return update
-
+        if any(isinstance(message, ToolMessage) for message in messages):
+            update["pending_intent"] = None
         request_id = state.get("request_id")
         if request_id is not None:
+            completed_citations = dict(state.get("completed_request_citations", {}))
+            completed_citations[request_id] = []
+            update["completed_request_citations"] = completed_citations
             completed_requests = dict(state.get("completed_requests", {}))
             completed_requests[request_id] = response
             update["completed_requests"] = completed_requests
 
         return update
+
+    async def prepare_rag_context(
+        state: SupportState,
+    ) -> dict[str, str | list[CitationState] | None]:
+        normalized_message = state.get("normalized_message")
+        if normalized_message is None:
+            raise ValueError("normalized_message must be set before building RAG context")
+
+        if rag_context_builder is None:
+            return {
+                "pending_intent": None,
+                "rag_citations": [],
+            }
+
+        rag_prompt, citations = await rag_context_builder(normalized_message)
+
+        serialized_citations: list[CitationState] = [
+            {
+                "source_id": citation.source_id,
+                "chunk_id": citation.chunk_id,
+                "page_number": citation.page_number,
+                "content": citation.content,
+                "score": citation.score,
+            }
+            for citation in citations
+        ]
+        return {
+            "pending_intent": None,
+            "rag_prompt": rag_prompt,
+            "rag_citations": serialized_citations,
+        }
+
+    async def route_with_intent_router(
+        state: SupportState,
+    ) -> Literal["general", "order_start", "order_continue"]:
+        if intent_router is None:
+            return route_intent(state)
+
+        message = state.get("normalized_message")
+        if message is None:
+            raise ValueError("normalized_message must be set before routing intent")
+
+        pending_intent = state.get("pending_intent")
+        intent = await intent_router(message, pending_intent)
+
+        if intent == "order":
+            if pending_intent == "order":
+                return "order_continue"
+            return "order_start"
+
+        return "general"
 
     # 定义状态图节点和从请求入口开始的幂等分支。
     graph_builder = StateGraph(SupportState)
@@ -251,16 +367,22 @@ def build_support_graph(
         ToolNode(order_tools),
     )
 
+    graph_builder.add_node(
+        "prepare_rag_context",
+        prepare_rag_context,
+    )
+
     graph_builder.add_conditional_edges(
         "normalize_message",
-        route_intent,
+        route_with_intent_router,
         {
-            "general": "generate_response",
+            "general": "prepare_rag_context",
             "order_start": "request_order_identifier",
             "order_continue": "generate_order_response",
         },
     )
 
+    graph_builder.add_edge("prepare_rag_context", "generate_response")
     graph_builder.add_edge("generate_response", END)
     graph_builder.add_edge("reuse_completed_response", END)
     graph_builder.add_edge("request_order_identifier", END)

@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -14,7 +15,12 @@ from openai import (
 )
 from pydantic import SecretStr
 
-from app.adapters.openai_chat import SYSTEM_PROMPT, OpenAIChatAdapter
+from app.adapters.openai_chat import (
+    ROUTER_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    IntentDecision,
+    OpenAIChatAdapter,
+)
 from app.services.chat import (
     ChatError,
     ChatProviderAuthenticationError,
@@ -53,11 +59,82 @@ def test_openai_chat_adapter_configures_chat_openai_without_network_call() -> No
         max_retries=0,
         store=False,
     )
+    chat_openai.return_value.with_structured_output.assert_called_once_with(
+        IntentDecision,
+        method="function_calling",
+        strict=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "pending_intent", "expected_intent", "expected_pending_text"),
+    [
+        ("订单", None, "order", "当前没有待处理的订单查询。"),
+        (
+            "退款政策",
+            "order",
+            "non_action",
+            "当前正在等待订单编号。",
+        ),
+    ],
+)
+async def test_openai_chat_adapter_routes_intent_with_structured_output(
+    message: str,
+    pending_intent: Literal["order"] | None,
+    expected_intent: Literal["order", "non_action"],
+    expected_pending_text: str,
+) -> None:
+    chat_model = MagicMock()
+    intent_client = MagicMock()
+    intent_client.ainvoke = AsyncMock(
+        return_value=IntentDecision(intent=expected_intent),
+    )
+    chat_model.with_structured_output.return_value = intent_client
+
+    with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
+        adapter = OpenAIChatAdapter(
+            api_key=SecretStr("test-secret-key"),
+            model="gpt-test-model",
+            base_url=None,
+            reasoning_effort=None,
+            use_responses_api=True,
+            timeout_seconds=30.0,
+        )
+
+        result = await adapter.route_intent(message, pending_intent)
+
+    assert result == expected_intent
+    intent_client.ainvoke.assert_awaited_once()
+    messages = intent_client.ainvoke.await_args.args[0]
+    assert messages == [
+        SystemMessage(content=ROUTER_SYSTEM_PROMPT),
+        HumanMessage(content=f"{expected_pending_text}\n用户输入：{message}"),
+    ]
+
+
+async def test_openai_chat_adapter_rejects_invalid_intent_result() -> None:
+    chat_model = MagicMock()
+    intent_client = MagicMock()
+    intent_client.ainvoke = AsyncMock(return_value={"intent": "order"})
+    chat_model.with_structured_output.return_value = intent_client
+
+    with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
+        adapter = OpenAIChatAdapter(
+            api_key=SecretStr("test-secret-key"),
+            model="gpt-test-model",
+            base_url=None,
+            reasoning_effort=None,
+            use_responses_api=True,
+            timeout_seconds=30.0,
+        )
+
+        with pytest.raises(ChatProviderUnavailableError):
+            await adapter.route_intent("订单", None)
 
 
 async def test_openai_chat_adapter_generates_reply_with_system_and_user_messages() -> None:
-    chat_model = AsyncMock()
-    chat_model.ainvoke.return_value = AIMessage(content="测试助手回复")
+    chat_model = MagicMock()
+    chat_model.ainvoke = AsyncMock(return_value=AIMessage(content="测试助手回复"))
 
     with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
         adapter = OpenAIChatAdapter(
@@ -196,8 +273,8 @@ async def test_openai_chat_adapter_maps_provider_errors(
     upstream_error: OpenAIError,
     expected_error: type[ChatError],
 ) -> None:
-    chat_model = AsyncMock()
-    chat_model.ainvoke.side_effect = upstream_error
+    chat_model = MagicMock()
+    chat_model.ainvoke = AsyncMock(side_effect=upstream_error)
 
     with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
         adapter = OpenAIChatAdapter(
@@ -216,3 +293,60 @@ async def test_openai_chat_adapter_maps_provider_errors(
 
     assert caught_error.value.__cause__ is upstream_error
     assert "internal provider detail" not in str(caught_error.value)
+
+
+@pytest.mark.parametrize(
+    ("upstream_error", "expected_error"),
+    [
+        (
+            make_status_error(AuthenticationError, 401),
+            ChatProviderAuthenticationError,
+        ),
+        (
+            make_status_error(PermissionDeniedError, 403),
+            ChatProviderAuthenticationError,
+        ),
+        (
+            make_status_error(RateLimitError, 429),
+            ChatProviderRateLimitError,
+        ),
+        (
+            APITimeoutError(
+                request=httpx.Request("POST", "https://api.example.test/responses")
+            ),
+            ChatProviderTimeoutError,
+        ),
+        (
+            OpenAIError("internal provider detail"),
+            ChatProviderUnavailableError,
+        ),
+        (
+            ValueError("internal structured output detail"),
+            ChatProviderUnavailableError,
+        ),
+    ],
+)
+async def test_openai_chat_adapter_maps_intent_router_errors(
+    upstream_error: Exception,
+    expected_error: type[ChatError],
+) -> None:
+    chat_model = MagicMock()
+    intent_client = MagicMock()
+    intent_client.ainvoke = AsyncMock(side_effect=upstream_error)
+    chat_model.with_structured_output.return_value = intent_client
+
+    with patch("app.adapters.openai_chat.ChatOpenAI", return_value=chat_model):
+        adapter = OpenAIChatAdapter(
+            api_key=SecretStr("test-secret-key"),
+            model="gpt-test-model",
+            base_url=None,
+            reasoning_effort=None,
+            use_responses_api=True,
+            timeout_seconds=30.0,
+        )
+
+        with pytest.raises(expected_error) as caught_error:
+            await adapter.route_intent("退款政策", "order")
+
+    assert caught_error.value.__cause__ is upstream_error
+    assert "internal" not in str(caught_error.value)
