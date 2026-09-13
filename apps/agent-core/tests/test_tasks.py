@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
 from types import TracebackType
@@ -16,11 +17,17 @@ import app.tasks as tasks_module
 from app.core.database import create_database_engine
 from app.tasks import (
     IngestionTask,
+    IngestionTaskOutboxEvent,
     claim_ingestion_task,
+    claim_next_ingestion_event,
     claim_next_ingestion_task,
     create_ingestion_task,
     fail_ingestion_task,
     get_ingestion_task,
+    get_next_unpublished_ingestion_event,
+    mark_ingestion_event_published,
+    publish_next_ingestion_event_once,
+    reclaim_stale_ingestion_events,
     reclaim_stale_ingestion_task,
     retry_ingestion_task,
     run_ingestion_task_once,
@@ -44,6 +51,7 @@ class FakeTaskMappings:
 class FakeTaskResult:
     def __init__(self, row: dict[str, object] | None) -> None:
         self._row = row
+        self.rowcount = 1 if row is not None else 0
 
     def mappings(self) -> FakeTaskMappings:
         return FakeTaskMappings(self._row)
@@ -54,18 +62,26 @@ class FakeTaskConnection:
         self,
         row: dict[str, object] | None,
         error: RuntimeError | None = None,
+        error_on_call: int | None = None,
     ) -> None:
         self._row = row
         self._error = error
+        self._error_on_call = error_on_call
+        self._execute_calls = 0
         self.execution: tuple[TextClause, dict[str, object] | None] | None = None
+        self.executions: list[tuple[TextClause, dict[str, object] | None]] = []
 
     async def execute(
         self,
         statement: TextClause,
         parameters: dict[str, object] | None = None,
     ) -> FakeTaskResult:
+        self._execute_calls += 1
         self.execution = (statement, parameters)
-        if self._error is not None:
+        self.executions.append((statement, parameters))
+        if self._error is not None and (
+            self._error_on_call is None or self._execute_calls == self._error_on_call
+        ):
             raise self._error
         return FakeTaskResult(self._row)
 
@@ -94,6 +110,7 @@ class FakeTaskEngine:
         *,
         row: dict[str, object] | None = None,
         has_row: bool = True,
+        error_on_call: int | None = None,
     ) -> None:
         self.created_at = datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
         returned_row = (
@@ -111,6 +128,7 @@ class FakeTaskEngine:
         self.connection = FakeTaskConnection(
             returned_row if has_row else None,
             error,
+            error_on_call,
         )
         self.transaction = FakeTaskTransaction(self.connection)
         self.begin_calls = 0
@@ -203,6 +221,311 @@ async def test_get_ingestion_task_returns_none_when_task_does_not_exist() -> Non
     assert engine.connection.execution is not None
     _, parameters = engine.connection.execution
     assert parameters == {"task_id": "task-missing"}
+
+
+@pytest.mark.asyncio
+async def test_get_next_unpublished_ingestion_event_reads_oldest_event() -> None:
+    event_id = UUID("56565656-5656-5656-5656-565656565656")
+    attempt_id = UUID("67676767-6767-6767-6767-676767676767")
+    created_at = datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
+    engine = FakeTaskEngine(
+        row={
+            "id": event_id,
+            "task_id": "task-outbox-001",
+            "attempt_id": attempt_id,
+            "event_type": "ingestion_task.succeeded",
+            "payload": {"status": "SUCCEEDED"},
+            "created_at": created_at,
+            "published_at": None,
+        }
+    )
+
+    event = await get_next_unpublished_ingestion_event(cast(AsyncEngine, engine))
+
+    assert event == IngestionTaskOutboxEvent(
+        id=event_id,
+        task_id="task-outbox-001",
+        attempt_id=attempt_id,
+        event_type="ingestion_task.succeeded",
+        payload={"status": "SUCCEEDED"},
+        created_at=created_at,
+        published_at=None,
+    )
+    assert engine.connection.execution is not None
+    statement, parameters = engine.connection.execution
+    sql = str(statement)
+    assert "FROM agent_core.ingestion_task_outbox" in sql
+    assert "WHERE published_at IS NULL" in sql
+    assert "ORDER BY created_at ASC, id ASC" in sql
+    assert "LIMIT 1" in sql
+    assert parameters is None
+
+
+@pytest.mark.asyncio
+async def test_get_next_unpublished_ingestion_event_returns_none_when_empty() -> None:
+    engine = FakeTaskEngine(has_row=False)
+
+    event = await get_next_unpublished_ingestion_event(cast(AsyncEngine, engine))
+
+    assert event is None
+
+
+@pytest.mark.asyncio
+async def test_claim_next_ingestion_event_sets_publish_lease() -> None:
+    event_id = UUID("94949494-9494-9494-9494-949494949494")
+    task_attempt_id = UUID("95959595-9595-9595-9595-959595959595")
+    publish_attempt_id = UUID("96969696-9696-9696-9696-969696969696")
+    publishing_at = datetime(2026, 9, 2, 9, 32, tzinfo=UTC)
+    created_at = datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
+    engine = FakeTaskEngine(
+        row={
+            "id": event_id,
+            "task_id": "task-outbox-claim-001",
+            "attempt_id": task_attempt_id,
+            "event_type": "ingestion_task.succeeded",
+            "payload": {"status": "SUCCEEDED"},
+            "created_at": created_at,
+            "published_at": None,
+            "publish_attempt_id": publish_attempt_id,
+            "publishing_at": publishing_at,
+        }
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(tasks_module, "uuid4", lambda: publish_attempt_id)
+    try:
+        event = await claim_next_ingestion_event(cast(AsyncEngine, engine))
+    finally:
+        monkeypatch.undo()
+
+    assert event == IngestionTaskOutboxEvent(
+        id=event_id,
+        task_id="task-outbox-claim-001",
+        attempt_id=task_attempt_id,
+        event_type="ingestion_task.succeeded",
+        payload={"status": "SUCCEEDED"},
+        created_at=created_at,
+        published_at=None,
+        publish_attempt_id=publish_attempt_id,
+        publishing_at=publishing_at,
+    )
+    assert engine.connection.execution is not None
+    statement, parameters = engine.connection.execution
+    sql = str(statement)
+    assert "published_at IS NULL" in sql
+    assert "publish_attempt_id IS NULL" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "publish_attempt_id = :publish_attempt_id" in sql
+    assert "publishing_at = CURRENT_TIMESTAMP" in sql
+    assert "event.publish_attempt_id" in sql
+    assert "event.publishing_at" in sql
+    assert parameters == {"publish_attempt_id": publish_attempt_id}
+
+
+@pytest.mark.asyncio
+async def test_claim_next_ingestion_event_returns_none_when_no_eligible_event() -> None:
+    engine = FakeTaskEngine(has_row=False)
+
+    event = await claim_next_ingestion_event(cast(AsyncEngine, engine))
+
+    assert event is None
+
+
+@pytest.mark.asyncio
+async def test_mark_ingestion_event_published_updates_only_unpublished_event() -> None:
+    event_id = UUID("78787878-7878-7878-7878-787878787878")
+    publish_attempt_id = UUID("79797979-7979-7979-7979-797979797979")
+    engine = FakeTaskEngine(row={"id": event_id})
+
+    published = await mark_ingestion_event_published(
+        cast(AsyncEngine, engine),
+        event_id,
+        publish_attempt_id=publish_attempt_id,
+    )
+
+    assert published is True
+    assert engine.connection.execution is not None
+    statement, parameters = engine.connection.execution
+    assert "UPDATE agent_core.ingestion_task_outbox" in str(statement)
+    assert "published_at = CURRENT_TIMESTAMP" in str(statement)
+    assert "publish_attempt_id = NULL" in str(statement)
+    assert "publishing_at = NULL" in str(statement)
+    assert "WHERE id = :event_id" in str(statement)
+    assert "AND published_at IS NULL" in str(statement)
+    assert "AND publish_attempt_id = :publish_attempt_id" in str(statement)
+    assert "RETURNING id" in str(statement)
+    assert parameters == {
+        "event_id": event_id,
+        "publish_attempt_id": publish_attempt_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_mark_ingestion_event_published_returns_false_when_no_row_matches() -> None:
+    event_id = UUID("89898989-8989-8989-8989-898989898989")
+    publish_attempt_id = UUID("89898989-8989-8989-8989-898989898998")
+    engine = FakeTaskEngine(has_row=False)
+
+    published = await mark_ingestion_event_published(
+        cast(AsyncEngine, engine),
+        event_id,
+        publish_attempt_id=publish_attempt_id,
+    )
+
+    assert published is False
+
+
+@pytest.mark.asyncio
+async def test_publish_next_ingestion_event_once_publishes_then_marks() -> None:
+    stale_before = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    publish_attempt_id = UUID("94949494-9494-9494-9494-949494949494")
+    event = IngestionTaskOutboxEvent(
+        id=UUID("90909090-9090-9090-9090-909090909090"),
+        task_id="task-outbox-001",
+        attempt_id=UUID("91919191-9191-9191-9191-919191919191"),
+        event_type="ingestion_task.succeeded",
+        payload={"status": "SUCCEEDED"},
+        created_at=datetime(2026, 9, 2, 9, 30, tzinfo=UTC),
+        published_at=None,
+        publish_attempt_id=publish_attempt_id,
+    )
+    engine = object()
+    claim_next = AsyncMock(return_value=event)
+    reclaim = AsyncMock()
+    mark = AsyncMock(return_value=True)
+    publish = AsyncMock()
+    original_claim_next = tasks_module.claim_next_ingestion_event
+    original_reclaim = tasks_module.reclaim_stale_ingestion_events
+    original_mark = tasks_module.mark_ingestion_event_published
+    tasks_module.claim_next_ingestion_event = claim_next
+    tasks_module.reclaim_stale_ingestion_events = reclaim
+    tasks_module.mark_ingestion_event_published = mark
+    try:
+        result = await publish_next_ingestion_event_once(
+            cast(AsyncEngine, engine),
+            publish,
+            stale_before=stale_before,
+        )
+    finally:
+        tasks_module.claim_next_ingestion_event = original_claim_next
+        tasks_module.reclaim_stale_ingestion_events = original_reclaim
+        tasks_module.mark_ingestion_event_published = original_mark
+
+    assert result is True
+    reclaim.assert_awaited_once_with(engine, stale_before=stale_before)
+    claim_next.assert_awaited_once_with(engine)
+    publish.assert_awaited_once_with(event)
+    mark.assert_awaited_once_with(
+        engine,
+        event.id,
+        publish_attempt_id=publish_attempt_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_publish_next_ingestion_event_once_returns_false_for_empty_queue() -> None:
+    stale_before = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    engine = object()
+    claim_next = AsyncMock(return_value=None)
+    reclaim = AsyncMock()
+    mark = AsyncMock()
+    publish = AsyncMock()
+    original_claim_next = tasks_module.claim_next_ingestion_event
+    original_reclaim = tasks_module.reclaim_stale_ingestion_events
+    original_mark = tasks_module.mark_ingestion_event_published
+    tasks_module.claim_next_ingestion_event = claim_next
+    tasks_module.reclaim_stale_ingestion_events = reclaim
+    tasks_module.mark_ingestion_event_published = mark
+    try:
+        result = await publish_next_ingestion_event_once(
+            cast(AsyncEngine, engine),
+            publish,
+            stale_before=stale_before,
+        )
+    finally:
+        tasks_module.claim_next_ingestion_event = original_claim_next
+        tasks_module.reclaim_stale_ingestion_events = original_reclaim
+        tasks_module.mark_ingestion_event_published = original_mark
+
+    assert result is False
+    reclaim.assert_awaited_once_with(engine, stale_before=stale_before)
+    publish.assert_not_awaited()
+    mark.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_publish_next_ingestion_event_once_leaves_event_unmarked_on_failure() -> None:
+    stale_before = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    publish_attempt_id = UUID("94949494-9494-9494-9494-949494949495")
+    event = IngestionTaskOutboxEvent(
+        id=UUID("92929292-9292-9292-9292-929292929292"),
+        task_id="task-outbox-002",
+        attempt_id=UUID("93939393-9393-9393-9393-939393939393"),
+        event_type="ingestion_task.failed",
+        payload={"status": "FAILED"},
+        created_at=datetime(2026, 9, 2, 9, 31, tzinfo=UTC),
+        published_at=None,
+        publish_attempt_id=publish_attempt_id,
+    )
+    engine = object()
+    claim_next = AsyncMock(return_value=event)
+    reclaim = AsyncMock()
+    mark = AsyncMock()
+    publish = AsyncMock(side_effect=RuntimeError("broker unavailable"))
+    original_claim_next = tasks_module.claim_next_ingestion_event
+    original_reclaim = tasks_module.reclaim_stale_ingestion_events
+    original_mark = tasks_module.mark_ingestion_event_published
+    tasks_module.claim_next_ingestion_event = claim_next
+    tasks_module.reclaim_stale_ingestion_events = reclaim
+    tasks_module.mark_ingestion_event_published = mark
+    try:
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            await publish_next_ingestion_event_once(
+                cast(AsyncEngine, engine),
+                publish,
+                stale_before=stale_before,
+            )
+    finally:
+        tasks_module.claim_next_ingestion_event = original_claim_next
+        tasks_module.reclaim_stale_ingestion_events = original_reclaim
+        tasks_module.mark_ingestion_event_published = original_mark
+
+    reclaim.assert_awaited_once_with(engine, stale_before=stale_before)
+    publish.assert_awaited_once_with(event)
+    mark.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_ingestion_events_releases_expired_lease() -> None:
+    stale_before = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    engine = FakeTaskEngine(row={"id": UUID("95959595-9595-9595-9595-959595959595")})
+
+    reclaimed = await reclaim_stale_ingestion_events(
+        cast(AsyncEngine, engine),
+        stale_before=stale_before,
+    )
+
+    assert reclaimed == 1
+    assert engine.connection.execution is not None
+    statement, parameters = engine.connection.execution
+    sql = str(statement)
+    assert "published_at IS NULL" in sql
+    assert "publish_attempt_id IS NOT NULL" in sql
+    assert "publishing_at < :stale_before" in sql
+    assert "publish_attempt_id = NULL" in sql
+    assert "publishing_at = NULL" in sql
+    assert parameters == {"stale_before": stale_before}
+
+
+@pytest.mark.asyncio
+async def test_reclaim_stale_ingestion_events_returns_zero_when_no_lease_matches() -> None:
+    engine = FakeTaskEngine(has_row=False)
+
+    reclaimed = await reclaim_stale_ingestion_events(
+        cast(AsyncEngine, engine),
+        stale_before=datetime(2026, 9, 2, 10, 0, tzinfo=UTC),
+    )
+
+    assert reclaimed == 0
 
 
 @pytest.mark.asyncio
@@ -344,8 +667,8 @@ async def test_succeed_ingestion_task_atomically_changes_running_to_succeeded() 
         retry_count=0,
         attempt_id=attempt_id,
     )
-    assert engine.connection.execution is not None
-    statement, parameters = engine.connection.execution
+    assert len(engine.connection.executions) == 2
+    statement, parameters = engine.connection.executions[0]
     assert "SET status = 'SUCCEEDED'" in str(statement)
     assert "AND status = 'RUNNING'" in str(statement)
     assert "AND attempt_id = :attempt_id" in str(statement)
@@ -356,6 +679,47 @@ async def test_succeed_ingestion_task_atomically_changes_running_to_succeeded() 
         "task_id": "task-demo-001",
         "attempt_id": attempt_id,
     }
+    outbox_statement, outbox_parameters = engine.connection.executions[1]
+    assert "INSERT INTO agent_core.ingestion_task_outbox" in str(outbox_statement)
+    assert "CAST(:payload AS jsonb)" in str(outbox_statement)
+    assert outbox_parameters is not None
+    assert outbox_parameters["task_id"] == "task-demo-001"
+    assert outbox_parameters["attempt_id"] == attempt_id
+    assert outbox_parameters["event_id"] is not None
+    assert outbox_parameters["payload"] == json.dumps(
+        {
+            "task_id": "task-demo-001",
+            "attempt_id": str(attempt_id),
+            "status": "SUCCEEDED",
+        }
+    )
+    assert engine.begin_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_succeed_ingestion_task_rolls_back_when_outbox_insert_fails() -> None:
+    attempt_id = UUID("23232323-2323-2323-2323-232323232323")
+    engine = FakeTaskEngine(
+        error=RuntimeError("outbox unavailable"),
+        error_on_call=2,
+        row={
+            "id": "task-demo-001",
+            "status": "SUCCEEDED",
+            "created_at": datetime(2026, 9, 2, 9, 30, tzinfo=UTC),
+            "started_at": datetime(2026, 9, 2, 9, 31, tzinfo=UTC),
+            "attempt_id": attempt_id,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="outbox unavailable"):
+        await succeed_ingestion_task(
+            cast(AsyncEngine, engine),
+            "task-demo-001",
+            attempt_id=attempt_id,
+        )
+
+    assert engine.transaction.exit_exception_type is RuntimeError
+    assert len(engine.connection.executions) == 2
 
 
 @pytest.mark.asyncio
@@ -400,8 +764,8 @@ async def test_fail_ingestion_task_atomically_changes_running_to_failed() -> Non
         retry_count=0,
         attempt_id=attempt_id,
     )
-    assert engine.connection.execution is not None
-    statement, parameters = engine.connection.execution
+    assert len(engine.connection.executions) == 2
+    statement, parameters = engine.connection.executions[0]
     assert "SET status = 'FAILED'" in str(statement)
     assert "AND status = 'RUNNING'" in str(statement)
     assert "AND attempt_id = :attempt_id" in str(statement)
@@ -412,6 +776,47 @@ async def test_fail_ingestion_task_atomically_changes_running_to_failed() -> Non
         "task_id": "task-demo-001",
         "attempt_id": attempt_id,
     }
+    outbox_statement, outbox_parameters = engine.connection.executions[1]
+    assert "INSERT INTO agent_core.ingestion_task_outbox" in str(outbox_statement)
+    assert "'ingestion_task.failed'" in str(outbox_statement)
+    assert outbox_parameters is not None
+    assert outbox_parameters["task_id"] == "task-demo-001"
+    assert outbox_parameters["attempt_id"] == attempt_id
+    assert outbox_parameters["event_id"] is not None
+    assert outbox_parameters["payload"] == json.dumps(
+        {
+            "task_id": "task-demo-001",
+            "attempt_id": str(attempt_id),
+            "status": "FAILED",
+        }
+    )
+    assert engine.begin_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_fail_ingestion_task_rolls_back_when_outbox_insert_fails() -> None:
+    attempt_id = UUID("34343434-3434-3434-3434-343434343434")
+    engine = FakeTaskEngine(
+        error=RuntimeError("outbox unavailable"),
+        error_on_call=2,
+        row={
+            "id": "task-demo-001",
+            "status": "FAILED",
+            "created_at": datetime(2026, 9, 2, 9, 30, tzinfo=UTC),
+            "started_at": datetime(2026, 9, 2, 9, 31, tzinfo=UTC),
+            "attempt_id": attempt_id,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="outbox unavailable"):
+        await fail_ingestion_task(
+            cast(AsyncEngine, engine),
+            "task-demo-001",
+            attempt_id=attempt_id,
+        )
+
+    assert engine.transaction.exit_exception_type is RuntimeError
+    assert len(engine.connection.executions) == 2
 
 
 @pytest.mark.asyncio
@@ -1015,6 +1420,17 @@ async def test_only_one_concurrent_claimant_gets_execution_right() -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id IN (:task_id, :failed_task_id, :worker_task_id)"
+                ),
+                {
+                    "task_id": task_id,
+                    "failed_task_id": failed_task_id,
+                    "worker_task_id": worker_task_id,
+                },
+            )
+            await connection.execute(
+                text(
                     "DELETE FROM agent_core.ingestion_tasks "
                     "WHERE id IN (:task_id, :failed_task_id, :worker_task_id)"
                 ),
@@ -1079,6 +1495,13 @@ async def test_concurrent_reclaimers_requeue_stale_task_once() -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            await connection.execute(
+                text(
                     "DELETE FROM agent_core.ingestion_tasks WHERE id = :task_id"
                 ),
                 {"task_id": task_id},
@@ -1124,6 +1547,13 @@ async def test_reclaim_and_complete_race_allows_only_one_state_transition() -> N
         assert current.status == transitioned[0].status
     finally:
         async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
             await connection.execute(
                 text(
                     "DELETE FROM agent_core.ingestion_tasks WHERE id = :task_id"
@@ -1186,9 +1616,419 @@ async def test_old_attempt_cannot_complete_after_task_is_reclaimed() -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            await connection.execute(
+                text(
                     "DELETE FROM agent_core.ingestion_tasks WHERE id = :task_id"
                 ),
                 {"task_id": task_id},
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_succeed_ingestion_task_writes_one_outbox_event_idempotently() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    task_id = f"outbox-success-{uuid4()}"
+
+    try:
+        await create_ingestion_task(engine, task_id)
+        claimed = await claim_ingestion_task(engine, task_id)
+        assert claimed is not None
+        assert claimed.attempt_id is not None
+
+        completed = await succeed_ingestion_task(
+            engine,
+            task_id,
+            attempt_id=claimed.attempt_id,
+        )
+        assert completed is not None
+        assert completed.status == "SUCCEEDED"
+
+        duplicate = await succeed_ingestion_task(
+            engine,
+            task_id,
+            attempt_id=claimed.attempt_id,
+        )
+        assert duplicate is None
+
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT task_id, attempt_id, event_type, payload, published_at "
+                    "FROM agent_core.ingestion_task_outbox WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            rows = result.mappings().all()
+
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == task_id
+        assert rows[0]["attempt_id"] == claimed.attempt_id
+        assert rows[0]["event_type"] == "ingestion_task.succeeded"
+        assert rows[0]["payload"]["status"] == "SUCCEEDED"
+        assert rows[0]["published_at"] is None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_tasks WHERE id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_fail_ingestion_task_writes_one_outbox_event_idempotently() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    task_id = f"outbox-failed-{uuid4()}"
+
+    try:
+        await create_ingestion_task(engine, task_id)
+        claimed = await claim_ingestion_task(engine, task_id)
+        assert claimed is not None
+        assert claimed.attempt_id is not None
+
+        failed = await fail_ingestion_task(
+            engine,
+            task_id,
+            attempt_id=claimed.attempt_id,
+        )
+        assert failed is not None
+        assert failed.status == "FAILED"
+
+        duplicate = await fail_ingestion_task(
+            engine,
+            task_id,
+            attempt_id=claimed.attempt_id,
+        )
+        assert duplicate is None
+
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT task_id, attempt_id, event_type, payload, published_at "
+                    "FROM agent_core.ingestion_task_outbox WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            rows = result.mappings().all()
+
+        assert len(rows) == 1
+        assert rows[0]["task_id"] == task_id
+        assert rows[0]["attempt_id"] == claimed.attempt_id
+        assert rows[0]["event_type"] == "ingestion_task.failed"
+        assert rows[0]["payload"]["status"] == "FAILED"
+        assert rows[0]["published_at"] is None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_tasks WHERE id = :task_id"
+                ),
+                {"task_id": task_id},
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_next_unpublished_event_ignores_published_rows() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    published_id = uuid4()
+    pending_id = uuid4()
+    published_attempt_id = uuid4()
+    pending_attempt_id = uuid4()
+
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO agent_core.ingestion_task_outbox "
+                    "(id, task_id, attempt_id, event_type, payload, published_at) "
+                    "VALUES (:id, :task_id, :attempt_id, :event_type, "
+                    "CAST(:payload AS jsonb), CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "id": published_id,
+                    "task_id": f"published-{published_id}",
+                    "attempt_id": published_attempt_id,
+                    "event_type": "ingestion_task.succeeded",
+                    "payload": '{"status": "SUCCEEDED"}',
+                },
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO agent_core.ingestion_task_outbox "
+                    "(id, task_id, attempt_id, event_type, payload) "
+                    "VALUES (:id, :task_id, :attempt_id, :event_type, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {
+                    "id": pending_id,
+                    "task_id": f"pending-{pending_id}",
+                    "attempt_id": pending_attempt_id,
+                    "event_type": "ingestion_task.failed",
+                    "payload": '{"status": "FAILED"}',
+                },
+            )
+
+        event = await get_next_unpublished_ingestion_event(engine)
+
+        assert event is not None
+        assert event.id == pending_id
+        assert event.published_at is None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE id IN (:published_id, :pending_id)"
+                ),
+                {"published_id": published_id, "pending_id": pending_id},
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_publish_markers_update_event_once() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    event_id = uuid4()
+    attempt_id = uuid4()
+
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO agent_core.ingestion_task_outbox "
+                    "(id, task_id, attempt_id, event_type, payload) "
+                    "VALUES (:id, :task_id, :attempt_id, :event_type, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {
+                    "id": event_id,
+                    "task_id": f"publish-mark-{event_id}",
+                    "attempt_id": attempt_id,
+                    "event_type": "ingestion_task.succeeded",
+                    "payload": '{"status": "SUCCEEDED"}',
+                },
+            )
+
+        claimed = await claim_next_ingestion_event(engine)
+        assert claimed is not None
+        assert claimed.publish_attempt_id is not None
+
+        results = await asyncio.gather(
+            mark_ingestion_event_published(
+                engine,
+                event_id,
+                publish_attempt_id=claimed.publish_attempt_id,
+            ),
+            mark_ingestion_event_published(
+                engine,
+                event_id,
+                publish_attempt_id=uuid4(),
+            ),
+        )
+
+        assert sorted(results) == [False, True]
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT published_at FROM agent_core.ingestion_task_outbox "
+                    "WHERE id = :event_id"
+                ),
+                {"event_id": event_id},
+            )
+            assert result.scalar_one() is not None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox WHERE id = :event_id"
+                ),
+                {"event_id": event_id},
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reclaim_stale_ingestion_events_preserves_published_and_fresh_events() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    stale_id = uuid4()
+    fresh_id = uuid4()
+    published_id = uuid4()
+    stale_before = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    stale_at = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+    fresh_at = datetime(2026, 9, 2, 10, 1, tzinfo=UTC)
+    published_at = datetime(2026, 9, 2, 9, 30, tzinfo=UTC)
+    rows = (
+        (stale_id, stale_at, None),
+        (fresh_id, fresh_at, None),
+        (published_id, stale_at, published_at),
+    )
+
+    try:
+        async with engine.begin() as connection:
+            for event_id, publishing_at, completed_at in rows:
+                await connection.execute(
+                    text(
+                        "INSERT INTO agent_core.ingestion_task_outbox "
+                        "(id, task_id, attempt_id, event_type, payload, "
+                        "published_at, publish_attempt_id, publishing_at) "
+                        "VALUES (:id, :task_id, :attempt_id, :event_type, "
+                        "CAST(:payload AS jsonb), :published_at, "
+                        ":publish_attempt_id, :publishing_at)"
+                    ),
+                    {
+                        "id": event_id,
+                        "task_id": f"reclaim-{event_id}",
+                        "attempt_id": uuid4(),
+                        "event_type": "ingestion_task.succeeded",
+                        "payload": '{"status": "SUCCEEDED"}',
+                        "published_at": completed_at,
+                        "publish_attempt_id": uuid4(),
+                        "publishing_at": publishing_at,
+                    },
+                )
+
+        assert (
+            await reclaim_stale_ingestion_events(
+                engine,
+                stale_before=stale_before,
+            )
+            == 1
+        )
+
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT id, published_at, publish_attempt_id, publishing_at "
+                    "FROM agent_core.ingestion_task_outbox "
+                    "WHERE id IN (:stale_id, :fresh_id, :published_id)"
+                ),
+                {
+                    "stale_id": stale_id,
+                    "fresh_id": fresh_id,
+                    "published_id": published_id,
+                },
+            )
+            snapshots = {row["id"]: row for row in result.mappings()}
+
+        assert snapshots[stale_id]["published_at"] is None
+        assert snapshots[stale_id]["publish_attempt_id"] is None
+        assert snapshots[stale_id]["publishing_at"] is None
+        assert snapshots[fresh_id]["publish_attempt_id"] is not None
+        assert snapshots[fresh_id]["publishing_at"] == fresh_at
+        assert snapshots[published_id]["published_at"] == published_at
+        assert snapshots[published_id]["publish_attempt_id"] is not None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE id IN (:stale_id, :fresh_id, :published_id)"
+                ),
+                {
+                    "stale_id": stale_id,
+                    "fresh_id": fresh_id,
+                    "published_id": published_id,
+                },
+            )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_concurrent_event_claimers_get_distinct_publish_lease() -> None:
+    database_url = os.getenv("TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("TEST_DATABASE_URL is not configured.")
+
+    engine = create_database_engine(database_url)
+    event_id = uuid4()
+    task_id = f"event-claim-{event_id}"
+    attempt_id = uuid4()
+
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO agent_core.ingestion_task_outbox "
+                    "(id, task_id, attempt_id, event_type, payload) "
+                    "VALUES (:id, :task_id, :attempt_id, :event_type, "
+                    "CAST(:payload AS jsonb))"
+                ),
+                {
+                    "id": event_id,
+                    "task_id": task_id,
+                    "attempt_id": attempt_id,
+                    "event_type": "ingestion_task.succeeded",
+                    "payload": '{"status": "SUCCEEDED"}',
+                },
+            )
+
+        results = await asyncio.gather(
+            claim_next_ingestion_event(engine),
+            claim_next_ingestion_event(engine),
+        )
+        claimed = [event for event in results if event is not None]
+
+        assert len(claimed) == 1
+        assert claimed[0].id == event_id
+        assert claimed[0].publish_attempt_id is not None
+        assert claimed[0].publishing_at is not None
+        assert await claim_next_ingestion_event(engine) is None
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox WHERE id = :event_id"
+                ),
+                {"event_id": event_id},
             )
         await engine.dispose()
 
@@ -1223,6 +2063,13 @@ async def test_concurrent_next_claims_get_distinct_pending_tasks() -> None:
         assert await claim_next_ingestion_task(engine) is None
     finally:
         async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id LIKE :task_prefix"
+                ),
+                {"task_prefix": f"{task_prefix}%"},
+            )
             await connection.execute(
                 text(
                     "DELETE FROM agent_core.ingestion_tasks "
@@ -1265,6 +2112,13 @@ async def test_concurrent_next_workers_process_distinct_tasks() -> None:
         assert set(work_calls) == set(task_ids)
     finally:
         async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM agent_core.ingestion_task_outbox "
+                    "WHERE task_id LIKE :task_prefix"
+                ),
+                {"task_prefix": f"{task_prefix}%"},
+            )
             await connection.execute(
                 text(
                     "DELETE FROM agent_core.ingestion_tasks "

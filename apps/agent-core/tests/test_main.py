@@ -143,3 +143,55 @@ async def test_lifespan_keeps_app_available_when_local_rag_initialization_fails(
             assert application.state.chat_service is None
 
     embeddings_builder.assert_called_once_with(settings)
+
+
+async def test_lifespan_disposes_database_when_redis_is_unconfigured() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=None) as redis_factory,
+        patch("app.main.create_local_embeddings", return_value=None),
+    ):
+        application = create_app(settings)
+
+        async with application.router.lifespan_context(application):
+            assert application.state.redis_client is None
+
+    redis_factory.assert_called_once_with(settings)
+    fake_engine.dispose.assert_awaited_once()
+
+
+async def test_lifespan_closes_redis_and_database_on_shutdown() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
+        redis_url="redis://localhost:6379/0",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock()
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=fake_redis) as redis_factory,
+        patch("app.main.create_local_embeddings", return_value=None),
+    ):
+        application = create_app(settings)
+
+        async with application.router.lifespan_context(application):
+            assert application.state.redis_client is fake_redis
+
+    redis_factory.assert_called_once_with(settings)
+    fake_redis.aclose.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()

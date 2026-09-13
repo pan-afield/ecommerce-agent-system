@@ -1,3 +1,4 @@
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -5,6 +6,19 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+@dataclass(frozen=True)
+class IngestionTaskOutboxEvent:
+    id: UUID
+    task_id: str
+    attempt_id: UUID
+    event_type: str
+    payload: dict[str, object]
+    created_at: datetime
+    published_at: datetime | None
+    publish_attempt_id: UUID | None = None
+    publishing_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +133,42 @@ async def succeed_ingestion_task(
         if row is None:
             return None
 
+        event_id = uuid4()
+        payload = json.dumps(
+            {
+                "task_id": task_id,
+                "attempt_id": str(attempt_id),
+                "status": "SUCCEEDED",
+            }
+        )
+
+        await connection.execute(
+            text(
+                """
+                INSERT INTO agent_core.ingestion_task_outbox (
+                    id,
+                    task_id,
+                    attempt_id,
+                    event_type,
+                    payload
+                )
+                VALUES (
+                    :event_id,
+                    :task_id,
+                    :attempt_id,
+                    'ingestion_task.succeeded',
+                    CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "event_id": event_id,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "payload": payload,
+            },
+        )
+
         return IngestionTask(
             id=row["id"],
             status=row["status"],
@@ -156,7 +206,41 @@ async def fail_ingestion_task(
 
         if row is None:
             return None
+        event_id = uuid4()
+        payload = json.dumps(
+            {
+                "task_id": task_id,
+                "attempt_id": str(attempt_id),
+                "status": "FAILED",
+            }
+        )
 
+        await connection.execute(
+            text(
+                """
+                INSERT INTO agent_core.ingestion_task_outbox (
+                    id,
+                    task_id,
+                    attempt_id,
+                    event_type,
+                    payload
+                )
+                VALUES (
+                    :event_id,
+                    :task_id,
+                    :attempt_id,
+                    'ingestion_task.failed',
+                    CAST(:payload AS jsonb)
+                )
+                """
+            ),
+            {
+                "event_id": event_id,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "payload": payload,
+            },
+        )
         return IngestionTask(
             id=row["id"],
             status=row["status"],
@@ -396,3 +480,161 @@ async def reclaim_stale_ingestion_task(
             retry_count=row["retry_count"],
             attempt_id=row["attempt_id"],
         )
+
+
+async def get_next_unpublished_ingestion_event(
+    engine: AsyncEngine,
+) -> IngestionTaskOutboxEvent | None:
+    statement = text(
+        """
+        SELECT id, task_id, attempt_id, event_type, payload, created_at, published_at
+        FROM agent_core.ingestion_task_outbox
+        WHERE published_at IS NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        """
+    )
+    async with engine.begin() as connection:
+        result = await connection.execute(statement)
+        row = result.mappings().one_or_none()
+
+        if row is None:
+            return None
+
+        return IngestionTaskOutboxEvent(
+            id=row["id"],
+            task_id=row["task_id"],
+            attempt_id=row["attempt_id"],
+            event_type=row["event_type"],
+            payload=row["payload"],
+            created_at=row["created_at"],
+            published_at=row["published_at"],
+        )
+
+
+async def mark_ingestion_event_published(
+    engine: AsyncEngine,
+    event_id: UUID,
+    *,
+    publish_attempt_id: UUID,
+) -> bool:
+    statement = text(
+        """
+        UPDATE agent_core.ingestion_task_outbox
+        SET
+            published_at = CURRENT_TIMESTAMP,
+            publish_attempt_id = NULL,
+            publishing_at = NULL
+        WHERE id = :event_id
+          AND published_at IS NULL
+          AND publish_attempt_id = :publish_attempt_id
+        RETURNING id
+        """
+    )
+    async with engine.begin() as connection:
+        result = await connection.execute(
+            statement, {"event_id": event_id, "publish_attempt_id": publish_attempt_id}
+        )
+        return result.rowcount > 0
+
+
+async def publish_next_ingestion_event_once(
+    engine: AsyncEngine,
+    publish: Callable[[IngestionTaskOutboxEvent], Awaitable[None]],
+    *,
+    stale_before: datetime,
+) -> bool:
+    await reclaim_stale_ingestion_events(
+        engine,
+        stale_before=stale_before,
+    )
+    event = await claim_next_ingestion_event(engine)
+
+    if event is None:
+        return False
+
+    if event.publish_attempt_id is None:
+        return False
+
+    await publish(event)
+
+    return await mark_ingestion_event_published(
+        engine,
+        event.id,
+        publish_attempt_id=event.publish_attempt_id,
+    )
+
+
+async def claim_next_ingestion_event(
+    engine: AsyncEngine,
+) -> IngestionTaskOutboxEvent | None:
+    publish_attempt_id = uuid4()
+    statement = text(
+        """
+        WITH next_event AS (
+            SELECT id
+            FROM agent_core.ingestion_task_outbox
+            WHERE published_at IS NULL
+              AND publish_attempt_id IS NULL
+            ORDER BY created_at ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        UPDATE agent_core.ingestion_task_outbox AS event
+        SET
+            publish_attempt_id = :publish_attempt_id,
+            publishing_at = CURRENT_TIMESTAMP
+        FROM next_event
+        WHERE event.id = next_event.id
+        RETURNING
+            event.id,
+            event.task_id,
+            event.attempt_id,
+            event.event_type,
+            event.payload,
+            event.created_at,
+            event.published_at,
+            event.publish_attempt_id,
+            event.publishing_at
+        """
+    )
+    async with engine.begin() as connection:
+        result = await connection.execute(statement, {"publish_attempt_id": publish_attempt_id})
+        row = result.mappings().one_or_none()
+
+        if row is None:
+            return None
+
+        return IngestionTaskOutboxEvent(
+            id=row["id"],
+            task_id=row["task_id"],
+            attempt_id=row["attempt_id"],
+            event_type=row["event_type"],
+            payload=row["payload"],
+            created_at=row["created_at"],
+            published_at=row["published_at"],
+            publish_attempt_id=row["publish_attempt_id"],
+            publishing_at=row["publishing_at"],
+        )
+
+
+async def reclaim_stale_ingestion_events(
+    engine: AsyncEngine,
+    *,
+    stale_before: datetime,
+) -> int:
+    statement = text(
+        """
+        UPDATE agent_core.ingestion_task_outbox
+        SET
+            publish_attempt_id = NULL,
+            publishing_at = NULL
+        WHERE published_at IS NULL
+          AND publish_attempt_id IS NOT NULL
+          AND publishing_at < :stale_before
+        RETURNING id
+        """
+    )
+    async with engine.begin() as connection:
+        result = await connection.execute(statement, {"stale_before": stale_before})
+        return result.rowcount

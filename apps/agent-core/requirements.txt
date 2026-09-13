@@ -17,3 +17,4 @@ pgvector==0.4.1
 llama-index-core==0.14.24
 llama-index-embeddings-huggingface==0.7.0
 sentence-transformers==6.0.0
+redis==5.2.1

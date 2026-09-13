@@ -10,6 +10,7 @@ from app.api.exception_handlers import chat_error_handler
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
+from app.core.redis import create_redis_client
 from app.rag.citations import KnowledgeCitation
 from app.rag.local_embeddings import RagEmbeddingError, create_local_embeddings
 from app.rag.service import build_rag_context, build_rag_prompt
@@ -27,6 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """在应用启动时创建共享资源，并在退出时释放数据库引擎。"""
         engine = create_database_engine(app_settings.database_url)
+        redis_client = create_redis_client(app_settings)
+        app.state.redis_client = redis_client
         app.state.rag_embeddings = None
         app.state.database_engine = engine
         app.state.readiness_probe = database_is_ready
@@ -109,6 +112,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 yield
         finally:
+            if redis_client is not None:
+                await redis_client.aclose()
+
             await engine.dispose()
 
     application = FastAPI(

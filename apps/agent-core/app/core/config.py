@@ -121,6 +121,18 @@ class Settings(BaseSettings):
         validation_alias="RAG_EMBEDDING_DEVICE",
     )
 
+    redis_url: str | None = Field(
+        default=None,
+        validation_alias="REDIS_URL",
+    )
+
+    redis_cache_ttl_seconds: int = Field(
+        default=30,
+        validation_alias="REDIS_CACHE_TTL_SECONDS",
+        gt=0,
+        le=3600,
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

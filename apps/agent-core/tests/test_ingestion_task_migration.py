@@ -30,6 +30,16 @@ ADD_ATTEMPT_ID_MIGRATION_PATH = (
     / "migrations"
     / "20260902110000_add_ingestion_task_attempt_id.sql"
 )
+OUTBOX_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "migrations"
+    / "20260902120000_create_ingestion_task_outbox.sql"
+)
+OUTBOX_LEASE_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "migrations"
+    / "20260907100000_add_outbox_publish_lease.sql"
+)
 
 
 def test_ingestion_task_migration_creates_minimal_pending_task_table() -> None:
@@ -139,5 +149,39 @@ def test_attempt_id_migration_adds_backward_compatible_uuid_column() -> None:
     assert sql.startswith("BEGIN;")
     assert sql.rstrip().endswith("COMMIT;")
     assert "ADD COLUMN attempt_id UUID;" in sql
+    assert "NOT NULL" not in sql
+    assert "DEFAULT" not in sql
+
+
+def test_outbox_migration_creates_attempt_event_table() -> None:
+    sql = OUTBOX_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert sql.startswith("BEGIN;")
+    assert sql.rstrip().endswith("COMMIT;")
+    assert "CREATE TABLE agent_core.ingestion_task_outbox" in sql
+    assert "id UUID PRIMARY KEY" in sql
+    assert "task_id VARCHAR(64) NOT NULL" in sql
+    assert "attempt_id UUID NOT NULL" in sql
+    assert "event_type VARCHAR(50) NOT NULL" in sql
+    assert "payload JSONB NOT NULL" in sql
+    assert "created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" in sql
+    assert "published_at TIMESTAMPTZ NULL" in sql
+
+
+def test_outbox_migration_has_attempt_scoped_idempotency_key() -> None:
+    sql = OUTBOX_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert "CONSTRAINT ingestion_task_outbox_event_unique" in sql
+    assert "UNIQUE (task_id, event_type, attempt_id)" in sql
+
+
+def test_outbox_lease_migration_adds_nullable_publisher_claim_fields() -> None:
+    sql = OUTBOX_LEASE_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert sql.startswith("BEGIN;")
+    assert sql.rstrip().endswith("COMMIT;")
+    assert "ALTER TABLE agent_core.ingestion_task_outbox" in sql
+    assert "ADD COLUMN publish_attempt_id UUID" in sql
+    assert "ADD COLUMN publishing_at TIMESTAMPTZ" in sql
     assert "NOT NULL" not in sql
     assert "DEFAULT" not in sql

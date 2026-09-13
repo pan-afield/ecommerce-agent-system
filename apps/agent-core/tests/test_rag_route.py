@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 import jwt
 import pytest
@@ -143,6 +144,176 @@ async def test_rag_search_returns_citations_from_service(
             5,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_rag_search_returns_valid_cache_without_calling_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    fake_redis = MagicMock()
+    app.state.redis_client = fake_redis
+    cached_value = {
+        "query": "退款政策",
+        "citations": [
+            {
+                "source_id": "refund-policy-v1",
+                "chunk_id": "b" * 64,
+                "page_number": 1,
+                "content": "签收后七天内可以申请退款。",
+                "score": 0.9,
+            }
+        ],
+    }
+    get_cached = AsyncMock(return_value=cached_value)
+    monkeypatch.setattr(rag_route_module, "get_cache_value", get_cached)
+
+    async def unexpected_service_call(*args: object, **kwargs: object) -> RagContext:
+        raise AssertionError("cache hit must not call the RAG service")
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", unexpected_service_call)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策", "limit": 3},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == cached_value
+    get_cached.assert_awaited_once_with(
+        fake_redis,
+        "rag:v1:BAAI/bge-m3:1024:limit=3:退款政策",
+    )
+
+
+@pytest.mark.asyncio
+async def test_rag_search_falls_back_when_cached_value_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    app.state.redis_client = MagicMock()
+    monkeypatch.setattr(
+        rag_route_module,
+        "get_cache_value",
+        AsyncMock(return_value={"unexpected": "shape"}),
+    )
+    monkeypatch.setattr(
+        rag_route_module,
+        "set_cache_value",
+        AsyncMock(return_value=True),
+    )
+    service_calls = 0
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        nonlocal service_calls
+        service_calls += 1
+        return RagContext(query="退款政策", citations=[])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策", "limit": 3},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "退款政策", "citations": []}
+    assert service_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_rag_search_writes_database_result_to_cache_on_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    fake_redis = MagicMock()
+    app.state.redis_client = fake_redis
+    citation = KnowledgeCitation(
+        source_id="refund-policy-v1",
+        chunk_id="c" * 64,
+        page_number=1,
+        content="签收后七天内可以申请退款。",
+        score=0.91,
+    )
+    monkeypatch.setattr(
+        rag_route_module,
+        "get_cache_value",
+        AsyncMock(return_value=None),
+    )
+    set_cached = AsyncMock(return_value=True)
+    monkeypatch.setattr(rag_route_module, "set_cache_value", set_cached)
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        return RagContext(query="退款政策", citations=[citation])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策", "limit": 3},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    set_cached.assert_awaited_once_with(
+        fake_redis,
+        "rag:v1:BAAI/bge-m3:1024:limit=3:退款政策",
+        {
+            "query": "退款政策",
+            "citations": [
+                {
+                    "source_id": "refund-policy-v1",
+                    "chunk_id": "c" * 64,
+                    "page_number": 1,
+                    "content": "签收后七天内可以申请退款。",
+                    "score": 0.91,
+                }
+            ],
+        },
+        ttl_seconds=30,
+    )
+
+
+@pytest.mark.asyncio
+async def test_rag_search_returns_result_when_cache_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    app.state.redis_client = MagicMock()
+    monkeypatch.setattr(
+        rag_route_module,
+        "get_cache_value",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        rag_route_module,
+        "set_cache_value",
+        AsyncMock(return_value=False),
+    )
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        return RagContext(query="苹果", citations=[])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "苹果"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "苹果", "citations": []}
 
 
 @pytest.mark.asyncio

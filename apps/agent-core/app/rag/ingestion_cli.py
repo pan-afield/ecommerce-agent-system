@@ -6,6 +6,7 @@ from typing import cast
 
 from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
+from app.core.redis import create_redis_client, invalidate_rag_cache
 from app.rag.chunking import KnowledgeChunk
 from app.rag.ingestion import (
     ingest_knowledge_chunks,
@@ -24,23 +25,32 @@ async def write_policy_chunks(
     """为一次 CLI 导入创建资源，并保证数据库引擎最终释放。"""
     embeddings = create_local_embeddings(settings)
     engine = create_database_engine(settings.database_url)
+    redis_client = create_redis_client(settings)
 
     try:
         if rebuild:
-            return await rebuild_knowledge_chunks(
+            count = await rebuild_knowledge_chunks(
+                engine,
+                chunks,
+                embeddings,
+                embedding_model=settings.rag_embedding_model,
+            )
+        else:
+            count = await ingest_knowledge_chunks(
                 engine,
                 chunks,
                 embeddings,
                 embedding_model=settings.rag_embedding_model,
             )
 
-        return await ingest_knowledge_chunks(
-            engine,
-            chunks,
-            embeddings,
-            embedding_model=settings.rag_embedding_model,
-        )
+        if redis_client is not None:
+            await invalidate_rag_cache(redis_client)
+
+        return count
     finally:
+        if redis_client is not None:
+            await redis_client.aclose()
+
         await engine.dispose()
 
 

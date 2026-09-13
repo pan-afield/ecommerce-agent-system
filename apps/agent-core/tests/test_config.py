@@ -127,6 +127,36 @@ def test_settings_allow_openai_to_be_unconfigured() -> None:
     assert settings.openai_request_timeout_seconds == 30.0
 
 
+def test_settings_use_redis_cache_defaults() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.redis_url is None
+    assert settings.redis_cache_ttl_seconds == 30
+
+
+def test_settings_load_redis_cache_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("REDIS_CACHE_TTL_SECONDS", "60")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.redis_url == "redis://localhost:6379/0"
+    assert settings.redis_cache_ttl_seconds == 60
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "3601"])
+def test_settings_reject_invalid_redis_cache_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("REDIS_CACHE_TTL_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_use_local_rag_embedding_defaults() -> None:
     settings = Settings(_env_file=None)
 

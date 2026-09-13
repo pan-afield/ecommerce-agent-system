@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -49,10 +49,15 @@ async def test_write_policy_chunks_uses_selected_operation_and_disposes_engine(
     create_engine = Mock(return_value=engine)
     ingest = AsyncMock(return_value=1)
     rebuild_chunks = AsyncMock(return_value=1)
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock()
+    invalidate = AsyncMock(return_value=1)
     monkeypatch.setattr(ingestion_cli, "create_local_embeddings", create_embeddings)
     monkeypatch.setattr(ingestion_cli, "create_database_engine", create_engine)
     monkeypatch.setattr(ingestion_cli, "ingest_knowledge_chunks", ingest)
     monkeypatch.setattr(ingestion_cli, "rebuild_knowledge_chunks", rebuild_chunks)
+    monkeypatch.setattr(ingestion_cli, "create_redis_client", Mock(return_value=fake_redis))
+    monkeypatch.setattr(ingestion_cli, "invalidate_rag_cache", invalidate)
 
     count = await ingestion_cli.write_policy_chunks(
         settings,
@@ -72,6 +77,8 @@ async def test_write_policy_chunks_uses_selected_operation_and_disposes_engine(
         embedding_model="test-local-model",
     )
     skipped.assert_not_awaited()
+    invalidate.assert_awaited_once_with(fake_redis)
+    fake_redis.aclose.assert_awaited_once()
     assert engine.dispose_calls == 1
 
 
@@ -80,8 +87,13 @@ async def test_write_policy_chunks_disposes_engine_when_operation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = FakeEngine()
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock()
+    invalidate = AsyncMock()
     monkeypatch.setattr(ingestion_cli, "create_local_embeddings", Mock(return_value=object()))
     monkeypatch.setattr(ingestion_cli, "create_database_engine", Mock(return_value=engine))
+    monkeypatch.setattr(ingestion_cli, "create_redis_client", Mock(return_value=fake_redis))
+    monkeypatch.setattr(ingestion_cli, "invalidate_rag_cache", invalidate)
     monkeypatch.setattr(
         ingestion_cli,
         "ingest_knowledge_chunks",
@@ -96,6 +108,8 @@ async def test_write_policy_chunks_disposes_engine_when_operation_fails(
         )
 
     assert engine.dispose_calls == 1
+    invalidate.assert_not_awaited()
+    fake_redis.aclose.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
