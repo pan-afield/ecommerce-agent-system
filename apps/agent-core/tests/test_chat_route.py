@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.tools import BaseTool
 
+import app.api.routes.chat as chat_route_module
 from app.api.dependencies import get_chat_service
 from app.core.config import Settings
 from app.main import create_app
@@ -69,6 +70,68 @@ def create_test_app(service: ChatService) -> FastAPI:
     # No RAG application state is needed because intent routing now owns retrieval.
     app.dependency_overrides[get_chat_service] = lambda: service
     return app
+
+
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
+@pytest.mark.asyncio
+async def test_chat_routes_return_429_when_user_rate_limit_is_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    app = create_test_app(service)
+    app.state.redis_client = object()
+
+    async def reject_request(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(chat_route_module, "consume_rate_limit", reject_request)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            path,
+            json={"message": "你好"},
+            headers=make_auth_headers("customer-001"),
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+    assert response.json() == {
+        "error": {
+            "code": "chat_rate_limited",
+            "message": "请求过于频繁，请稍后重试。",
+        }
+    }
+    service.reply.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_route_continues_when_redis_rate_limit_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AsyncMock(spec=ChatService)
+    service.reply.return_value = ChatResult(
+        content="你好，我可以帮你查询订单。",
+        model="test-model",
+        citations=[],
+    )
+    app = create_test_app(service)
+    app.state.redis_client = object()
+
+    async def allow_request(*args: object, **kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(chat_route_module, "consume_rate_limit", allow_request)
+
+    response = await post_chat(
+        app,
+        "你好",
+        headers=make_auth_headers("customer-001"),
+    )
+
+    assert response.status_code == 200
+    service.reply.assert_awaited_once()
 
 
 def test_chat_routes_document_rag_validation_error() -> None:

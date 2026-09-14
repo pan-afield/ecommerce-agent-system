@@ -184,6 +184,45 @@ def test_settings_reject_invalid_redis_cache_ttl(
         Settings(_env_file=None)
 
 
+def test_settings_use_rate_limit_defaults() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.rate_limit_requests == 30
+    assert settings.rate_limit_window_seconds == 60
+
+
+def test_settings_load_rate_limit_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS", "5")
+    monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "10")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.rate_limit_requests == 5
+    assert settings.rate_limit_window_seconds == 10
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("RATE_LIMIT_REQUESTS", "0"),
+        ("RATE_LIMIT_REQUESTS", "-1"),
+        ("RATE_LIMIT_WINDOW_SECONDS", "0"),
+        ("RATE_LIMIT_WINDOW_SECONDS", "-1"),
+    ],
+)
+def test_settings_reject_invalid_rate_limit_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_use_local_rag_embedding_defaults() -> None:
     settings = Settings(_env_file=None)
 

@@ -146,6 +146,18 @@ class Settings(BaseSettings):
         le=31_536_000,
     )
 
+    rate_limit_requests: int = Field(
+        default=30,
+        validation_alias="RATE_LIMIT_REQUESTS",
+        ge=1,
+    )
+
+    rate_limit_window_seconds: int = Field(
+        default=60,
+        validation_alias="RATE_LIMIT_WINDOW_SECONDS",
+        ge=1,
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

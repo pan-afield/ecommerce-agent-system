@@ -18,6 +18,10 @@ describe("AppShell", () => {
     expect(within(navigation).getByText("能力配置")).not.toHaveAttribute("aria-current");
     expect(screen.getByText("今天需要处理什么问题？")).toBeInTheDocument();
     expect(screen.getByText("已认证会话")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "当前用户" })).toHaveTextContent("demo@example.com");
+    expect(screen.getByRole("button", { name: "退出登录" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "账户" })).toBeInTheDocument();
+    expect(screen.queryByText("Signed in as")).toBeInTheDocument();
   });
 
   it("starts with an empty disabled composer", () => {

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -119,6 +119,7 @@ describe("KnowledgeSearch", () => {
     await user.click(screen.getByRole("button", { name: "检索知识库" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("知识库响应超时，请稍后重试。");
     await user.click(screen.getByRole("button", { name: "重试知识库检索" }));
+    await waitFor(() => expect(searchKnowledgeMock).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("未检索到相关知识库证据，请换一种问法重试。")).toBeInTheDocument();
   });
 

@@ -13,4 +13,9 @@ export async function login(email: string, password: string) {
   const body = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
   if (!response.ok) throw new Error(body.error?.message || "登录失败，请稍后重试。");
 }
-export async function logout() { await fetch("/api/auth/logout", { method: "POST" }); }
+export async function logout() {
+  const response = await fetch("/api/auth/logout", { method: "POST" });
+  if (!response.ok) {
+    throw new Error("退出登录失败，请重试。");
+  }
+}

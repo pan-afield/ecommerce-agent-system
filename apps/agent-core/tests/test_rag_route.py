@@ -103,6 +103,68 @@ async def test_rag_search_requires_authentication(
 
 
 @pytest.mark.asyncio
+async def test_rag_search_returns_429_when_user_rate_limit_is_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    app.state.redis_client = object()
+
+    async def reject_request(*args: object, **kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(rag_route_module, "consume_rate_limit", reject_request)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers("customer-001"),
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "60"
+    assert response.json() == {
+        "error": {
+            "code": "rag_rate_limited",
+            "message": "请求过于频繁，请稍后重试。",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_rag_search_continues_when_redis_rate_limit_check_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    app.state.redis_client = object()
+    service_called = False
+
+    async def allow_request(*args: object, **kwargs: object) -> bool:
+        return True
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        nonlocal service_called
+        service_called = True
+        return RagContext(query="退款政策", citations=[])
+
+    monkeypatch.setattr(rag_route_module, "consume_rate_limit", allow_request)
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers("customer-001"),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"query": "退款政策", "citations": []}
+    assert service_called is True
+
+
+@pytest.mark.asyncio
 async def test_rag_search_returns_citations_from_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
