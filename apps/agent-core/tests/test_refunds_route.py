@@ -1,7 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import jwt
@@ -12,10 +11,11 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.routes.refunds import RefundReviewPayload
-from app.core.config import Settings
 from app.services.refund import RefundApplicationRecord
+from tests.conftest import FakeRoleEngine
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+TEST_JWT_ISSUER = "ecommerce-agent-system"
 
 
 def make_auth_headers(sub: str = "demo-user-li") -> dict[str, str]:
@@ -23,6 +23,8 @@ def make_auth_headers(sub: str = "demo-user-li") -> dict[str, str]:
         {
             "sub": sub,
             "exp": datetime.now(UTC) + timedelta(minutes=5),
+            "iss": TEST_JWT_ISSUER,
+            "token_type": "access",
         },
         TEST_JWT_SECRET,
         algorithm="HS256",
@@ -58,8 +60,12 @@ def make_reviewed_application() -> RefundApplicationRecord:
 
 
 def configure_refund_approver(app: FastAPI) -> None:
-    settings = cast(Settings, app.state.settings)
-    settings.refund_approver_user_id = "staff-zhang"
+    app.state.database_engine = FakeRoleEngine(
+        {
+            "staff-zhang": "ADMIN",
+            "demo-user-li": "CUSTOMER",
+        }
+    )
 
 
 def test_refund_review_payload_normalizes_review_note() -> None:
@@ -259,22 +265,27 @@ async def test_review_refund_requires_authentication(
 
 
 @pytest.mark.asyncio
-async def test_review_refund_reports_unconfigured_approver_service(
+async def test_review_refund_uses_database_admin_role_without_legacy_configuration(
+    app: FastAPI,
     client: AsyncClient,
 ) -> None:
+    app.state.database_engine = FakeRoleEngine({"staff-zhang": "ADMIN"})
+    reviewed_application = make_reviewed_application()
     with patch(
         "app.api.routes.refunds.try_review_refund_application",
-        new=AsyncMock(),
-    ) as try_review:
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.api.routes.refunds.fetch_refund_application_by_id",
+        new=AsyncMock(return_value=reviewed_application),
+    ):
         response = await client.post(
             "/v1/refund-applications/refund-001/review",
             json={"decision": "APPROVED"},
             headers=make_auth_headers("staff-zhang"),
         )
 
-    assert response.status_code == 503
-    assert response.json() == {"detail": "退款审批服务尚未配置。"}
-    try_review.assert_not_awaited()
+    assert response.status_code == 200
+    assert response.json()["status"] == "APPROVED"
 
 
 @pytest.mark.asyncio

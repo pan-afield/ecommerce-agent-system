@@ -31,6 +31,7 @@ from app.services.refund import RefundApplicationRecord
 DatabaseValue = str | Decimal | datetime | None
 DatabaseRow = dict[str, DatabaseValue]
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+TEST_JWT_ISSUER = "ecommerce-agent-system"
 
 
 def test_refund_assessment_payload_parses_decimal_and_normalizes_currency() -> None:
@@ -110,6 +111,8 @@ def make_auth_headers(
 ) -> dict[str, str]:
     payload: dict[str, str | datetime] = {
         "exp": expires_at or datetime.now(UTC) + timedelta(minutes=5),
+        "iss": TEST_JWT_ISSUER,
+        "token_type": "access",
     }
     if include_sub:
         payload["sub"] = sub

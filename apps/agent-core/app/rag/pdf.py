@@ -46,6 +46,8 @@ def extract_pdf_pages(
 def chunk_pdf_document(
     source_id: str,
     pdf_bytes: bytes,
+    *,
+    visibility: str = "PUBLIC",
 ) -> list[KnowledgeChunk]:
     """把每个非空 PDF 页面包装为 Document 后切片，并保留原始页码。"""
     pages = extract_pdf_pages(source_id, pdf_bytes)
@@ -65,6 +67,7 @@ def chunk_pdf_document(
                 str(document.metadata["source_id"]),
                 document.text,
                 page_number=int(document.metadata["page_number"]),
+                visibility=visibility,
             )
         )
 

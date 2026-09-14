@@ -48,7 +48,7 @@ def test_build_rag_cache_key_normalizes_query_and_contains_embedding_identity() 
         limit=3,
     )
 
-    assert key == "rag:v1:BAAI/bge-m3:1024:limit=3:退款政策"
+    assert key == "rag:v1:BAAI/bge-m3:1024:visibility=PUBLIC:limit=3:退款政策"
 
 
 def test_build_rag_cache_key_separates_embedding_model_and_dimensions() -> None:

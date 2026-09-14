@@ -11,7 +11,14 @@ class KnowledgeChunk:
     chunk_index: int
     content: str
     page_number: int | None = None
+    visibility: str = "PUBLIC"
 
+
+ALLOWED_VISIBILITIES: tuple[str, ...] = (
+    "PUBLIC",
+    "SUPPORT",
+    "ADMIN",
+)
 
 DEFAULT_MAX_CHARS = 800
 
@@ -22,8 +29,13 @@ def chunk_policy_text(
     *,
     page_number: int | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    visibility: str = "PUBLIC",
 ) -> list[KnowledgeChunk]:
     """将政策文本切分为多个知识块。"""
+
+    if visibility not in ALLOWED_VISIBILITIES:
+        raise ValueError("visibility must be one of PUBLIC, SUPPORT, or ADMIN")
+
     if max_chars <= 0:
         raise ValueError("max_chars must be greater than zero")
     if page_number is not None and page_number <= 0:
@@ -86,6 +98,7 @@ def chunk_policy_text(
                 chunk_index=chunk_index,
                 content=content,
                 page_number=page_number,
+                visibility=visibility,
             )
         )
 

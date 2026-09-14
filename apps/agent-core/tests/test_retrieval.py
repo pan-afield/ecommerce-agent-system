@@ -60,8 +60,11 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
         *,
         embedding_model: str,
         limit: int,
+        visible_visibilities: tuple[str, ...],
     ) -> list[SemanticSearchResult]:
-        events.append(f"semantic:{embedding_model}:{query_embedding}:{limit}")
+        events.append(
+            f"semantic:{embedding_model}:{query_embedding}:{limit}:{visible_visibilities}"
+        )
         return [SemanticSearchResult(chunk=semantic_chunk, distance=0.1)]
 
     async def fake_keyword_search(
@@ -69,8 +72,9 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
         query: str,
         *,
         limit: int,
+        visible_visibilities: tuple[str, ...],
     ) -> list[KnowledgeChunk]:
-        events.append(f"keyword:{query}:{limit}")
+        events.append(f"keyword:{query}:{limit}:{visible_visibilities}")
         return [keyword_chunk]
 
     def fake_fuse(
@@ -105,8 +109,8 @@ async def test_retrieve_knowledge_runs_embedding_queries_and_fusion_in_order(
     assert results == expected
     assert embeddings.query_texts == [query]
     assert events == [
-        "semantic:test-model:[0.1, 0.2, 0.3]:2",
-        f"keyword:{query}:2",
+        "semantic:test-model:[0.1, 0.2, 0.3]:2:('PUBLIC',)",
+        f"keyword:{query}:2:('PUBLIC',)",
         "fuse:1:1:2",
     ]
 

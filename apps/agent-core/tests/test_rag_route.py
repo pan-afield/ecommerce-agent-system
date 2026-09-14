@@ -17,6 +17,7 @@ from app.rag.citations import KnowledgeCitation
 from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import RagContext
 from app.rag.vector_store import RagVectorDimensionError
+from tests.conftest import FakeRoleEngine
 
 
 class UnusedEmbeddings(Embeddings):
@@ -28,13 +29,16 @@ class UnusedEmbeddings(Embeddings):
 
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+TEST_JWT_ISSUER = "ecommerce-agent-system"
 
 
-def auth_headers() -> dict[str, str]:
+def auth_headers(sub: str = "test-user") -> dict[str, str]:
     token = jwt.encode(
         {
-            "sub": "test-user",
+            "sub": sub,
             "exp": datetime.now(UTC) + timedelta(minutes=5),
+            "iss": TEST_JWT_ISSUER,
+            "token_type": "access",
         },
         TEST_JWT_SECRET,
         algorithm="HS256",
@@ -50,7 +54,18 @@ def create_rag_test_app() -> FastAPI:
         jwt_secret_key=TEST_JWT_SECRET,
         _env_file=None,
     )
-    app.state.database_engine = cast(AsyncEngine, object())
+    app.state.database_engine = cast(
+        AsyncEngine,
+        FakeRoleEngine(
+            {
+                "test-user": "CUSTOMER",
+                "customer-001": "CUSTOMER",
+                "support-001": "SUPPORT",
+                "admin-001": "ADMIN",
+                "unknown-001": "UNKNOWN",
+            }
+        ),
+    )
     app.state.rag_embeddings = UnusedEmbeddings()
     return app
 
@@ -99,7 +114,7 @@ async def test_rag_search_returns_citations_from_service(
         content="退款需要订单本人提交。",
         score=0.25,
     )
-    calls: list[tuple[object, object, str, str, int]] = []
+    calls: list[tuple[object, object, str, str, int, tuple[str, ...]]] = []
 
     async def fake_build_context(
         engine: AsyncEngine,
@@ -108,8 +123,11 @@ async def test_rag_search_returns_citations_from_service(
         *,
         limit: int,
         embedding_model: str,
+        visible_visibilities: tuple[str, ...],
     ) -> RagContext:
-        calls.append((engine, embeddings, query, embedding_model, limit))
+        calls.append(
+            (engine, embeddings, query, embedding_model, limit, visible_visibilities)
+        )
         return RagContext(query="退款政策", citations=[citation])
 
     monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
@@ -142,8 +160,112 @@ async def test_rag_search_returns_citations_from_service(
             "  退款政策  ",
             app.state.settings.rag_embedding_model,
             5,
+            ("PUBLIC",),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_rag_search_allows_authenticated_users_for_public_knowledge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    citation = KnowledgeCitation(
+        source_id="public-policy-v1",
+        chunk_id="c" * 64,
+        page_number=1,
+        content="公共退款政策。",
+        score=0.9,
+    )
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        return RagContext(query="退款政策", citations=[citation])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        customer_response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers("customer-001"),
+        )
+        admin_response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers("admin-001"),
+        )
+
+    assert customer_response.status_code == 200
+    assert admin_response.status_code == 200
+    assert customer_response.json() == admin_response.json()
+
+
+@pytest.mark.parametrize(
+    ("user_id", "expected_visibility"),
+    [
+        ("customer-001", ("PUBLIC",)),
+        ("support-001", ("PUBLIC", "SUPPORT")),
+        ("admin-001", ("PUBLIC", "SUPPORT", "ADMIN")),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rag_search_maps_user_role_to_visibility_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: str,
+    expected_visibility: tuple[str, ...],
+) -> None:
+    app = create_rag_test_app()
+    captured: list[tuple[str, ...]] = []
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        captured.append(cast(tuple[str, ...], kwargs["visible_visibilities"]))
+        return RagContext(query="退款政策", citations=[])
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers(user_id),
+        )
+
+    assert response.status_code == 200
+    assert captured == [expected_visibility]
+
+
+@pytest.mark.asyncio
+async def test_rag_search_rejects_unknown_database_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_rag_test_app()
+    service_called = False
+
+    async def unexpected_service_call(*args: object, **kwargs: object) -> RagContext:
+        nonlocal service_called
+        service_called = True
+        raise AssertionError("RAG service must not run for an unknown role")
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", unexpected_service_call)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers("unknown-001"),
+        )
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "error": {
+            "code": "rag_forbidden",
+            "message": "当前用户没有知识库访问权限。",
+        }
+    }
+    assert service_called is False
 
 
 @pytest.mark.asyncio
@@ -185,7 +307,7 @@ async def test_rag_search_returns_valid_cache_without_calling_service(
     assert response.json() == cached_value
     get_cached.assert_awaited_once_with(
         fake_redis,
-        "rag:v1:BAAI/bge-m3:1024:limit=3:退款政策",
+        "rag:v1:BAAI/bge-m3:1024:visibility=PUBLIC:limit=3:退款政策",
     )
 
 
@@ -265,7 +387,7 @@ async def test_rag_search_writes_database_result_to_cache_on_miss(
     assert response.status_code == 200
     set_cached.assert_awaited_once_with(
         fake_redis,
-        "rag:v1:BAAI/bge-m3:1024:limit=3:退款政策",
+            "rag:v1:BAAI/bge-m3:1024:visibility=PUBLIC:limit=3:退款政策",
         {
             "query": "退款政策",
             "citations": [

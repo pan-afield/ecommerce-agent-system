@@ -21,6 +21,12 @@ enum RefundStatus {
   REJECTED
 }
 
+enum UserRole {
+  CUSTOMER
+  SUPPORT
+  ADMIN
+}
+
 /// The partial unique index for one non-rejected application per user/order
 /// is owned by migration 20260824090000_enforce_single_non_rejected_refund.
 model RefundApplication {
@@ -45,14 +51,31 @@ model RefundApplication {
   @@map("refund_applications")
 }
 
+model RefreshToken {
+  id        String    @id @db.VarChar(64)
+  userId    String    @map("user_id") @db.VarChar(64)
+  tokenHash String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("refresh_tokens")
+}
+
 model User {
   id                 String              @id @db.VarChar(64)
   name               String              @db.VarChar(100)
   email              String              @unique @db.VarChar(255)
+  passwordHash       String?             @map("password_hash") @db.VarChar(255)
+  refreshTokens      RefreshToken[]
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
   orders             Order[]
   refundApplications RefundApplication[]
+  role               UserRole            @default(CUSTOMER)
 
   @@map("users")
 }

@@ -66,37 +66,6 @@ def test_settings_reject_short_jwt_secret(
         Settings(_env_file=None)
 
 
-def test_settings_load_refund_approver_user_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("REFUND_APPROVER_USER_ID", "staff-zhang")
-
-    settings = Settings(_env_file=None)
-
-    assert settings.refund_approver_user_id == "staff-zhang"
-
-
-@pytest.mark.parametrize("value", ["", "   ", "\n\t"])
-def test_settings_treat_blank_refund_approver_as_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-    value: str,
-) -> None:
-    monkeypatch.setenv("REFUND_APPROVER_USER_ID", value)
-
-    settings = Settings(_env_file=None)
-
-    assert settings.refund_approver_user_id is None
-
-
-def test_settings_reject_overlong_refund_approver_user_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("REFUND_APPROVER_USER_ID", "x" * 65)
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
 def test_settings_load_openai_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test")
@@ -125,6 +94,64 @@ def test_settings_allow_openai_to_be_unconfigured() -> None:
     assert settings.openai_reasoning_effort is None
     assert settings.openai_agent_model == "gpt-4.1-mini"
     assert settings.openai_request_timeout_seconds == 30.0
+
+
+def test_settings_use_ecommerce_agent_issuer_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_issuer == "ecommerce-agent-system"
+
+
+def test_settings_load_custom_jwt_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JWT_ISSUER", "staging-ecommerce-agent")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_issuer == "staging-ecommerce-agent"
+
+
+def test_settings_load_access_token_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JWT_ACCESS_TOKEN_TTL_SECONDS", "600")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_access_token_ttl_seconds == 600
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "86401"])
+def test_settings_reject_invalid_access_token_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("JWT_ACCESS_TOKEN_TTL_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_settings_use_refresh_token_ttl_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_refresh_token_ttl_seconds == 2_592_000
+
+
+def test_settings_load_refresh_token_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JWT_REFRESH_TOKEN_TTL_SECONDS", "86400")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_refresh_token_ttl_seconds == 86_400
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "31536001"])
+def test_settings_reject_invalid_refresh_token_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("JWT_REFRESH_TOKEN_TTL_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_settings_use_redis_cache_defaults() -> None:

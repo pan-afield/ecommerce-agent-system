@@ -1,9 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, cast
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import InvalidTokenError
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.core.config import Settings
 from app.services.chat import ChatNotConfiguredError, ChatService
@@ -56,8 +60,12 @@ def get_current_user_id(
             credentials.credentials,
             settings.jwt_secret_key.get_secret_value(),
             algorithms=["HS256"],
-            options={"require": ["sub", "exp"]},
+            issuer=settings.jwt_issuer,
+            options={"require": ["sub", "exp", "iss", "token_type"]},
         )
+
+        if payload.get("token_type") != "access":
+            raise InvalidTokenError("token is not an access token")
     except InvalidTokenError as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -77,25 +85,88 @@ def get_current_user_id(
     return user_id
 
 
-# 在当前登录用户基础上，进一步校验其是否为配置的退款审批人。
-def get_current_refund_approver_id(
+# 在当前登录用户基础上，读取数据库角色并校验其是否为 ADMIN。
+async def get_current_refund_approver_id(
     request: Request,
     current_user_id: Annotated[str, Depends(get_current_user_id)],
 ) -> str:
-    settings = cast(Settings, request.app.state.settings)
+    engine = cast(
+        AsyncEngine,
+        request.app.state.database_engine,
+    )
 
-    # 未配置审批人时，说明审批服务尚未具备运行条件。
-    if settings.refund_approver_user_id is None:
+    try:
+        async with engine.connect() as connection:
+            statement = text("""SELECT role
+                        FROM users
+                        WHERE id = :user_id
+                        """)
+            result = await connection.execute(statement, {"user_id": current_user_id})
+            user = result.fetchone()
+            if user is None or user.role != "ADMIN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="无权审批退款申请。",
+                )
+    except SQLAlchemyError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="退款审批服务尚未配置。",
-        )
-
-    # 已登录不等于有审批权限，必须与配置的审批人 ID 完全匹配。
-    if current_user_id != settings.refund_approver_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="无权审批退款申请。",
-        )
+            detail="认证服务暂时不可用，请稍后重试。",
+        ) from error
 
     return current_user_id
+
+
+def create_access_token(
+    user_id: str,
+    settings: Settings,
+    ttl_seconds: int = 900,
+) -> str:
+    """生成带有用户 ID 的 JWT 访问令牌，默认有效期为 15 分钟。"""
+    if settings.jwt_secret_key is None:
+        raise ValueError("JWT secret key is not configured.")
+
+    payload = {
+        "sub": user_id,
+        "token_type": "access",
+        "iss": settings.jwt_issuer,
+        "exp": datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+    }
+
+    token = jwt.encode(
+        payload,
+        settings.jwt_secret_key.get_secret_value(),
+        algorithm="HS256",
+    )
+
+    return token
+
+
+async def get_current_user_role(
+    request: Request,
+    current_user_id: Annotated[str, Depends(get_current_user_id)],
+) -> str:
+    engine = cast(
+        AsyncEngine,
+        request.app.state.database_engine,
+    )
+
+    try:
+        async with engine.connect() as connection:
+            statement = text("""SELECT role
+                        FROM users
+                        WHERE id = :user_id
+                        """)
+            result = await connection.execute(statement, {"user_id": current_user_id})
+            user = result.fetchone()
+            if user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="用户不存在。",
+                )
+            return cast(str, user.role)
+    except SQLAlchemyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="认证服务暂时不可用，请稍后重试。",
+        ) from error

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from app.api.dependencies import get_current_user_id
+from app.api.dependencies import get_current_user_role
 from app.api.serializers import format_citations
 from app.core.redis import (
     build_rag_cache_key,
@@ -32,6 +32,7 @@ def _rag_error_response(
         "rag_invalid_query",
         "rag_embedding_unavailable",
         "rag_database_incompatible",
+        "rag_forbidden",
     ],
     message: str,
 ) -> JSONResponse:
@@ -48,6 +49,7 @@ def _rag_error_response(
     "/search",
     response_model=RagSearchResponse,
     responses={
+        status.HTTP_403_FORBIDDEN: {"model": ErrorResponse},
         status.HTTP_422_UNPROCESSABLE_ENTITY: {"model": ErrorResponse},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse},
     },
@@ -62,9 +64,9 @@ async def search_rag(
         int,
         Query(ge=1, le=10),
     ] = 3,
-    _current_user_id: Annotated[
+    _current_user_role: Annotated[
         str,
-        Depends(get_current_user_id),
+        Depends(get_current_user_role),
     ] = "",
 ) -> RagSearchResponse | JSONResponse:
     cache_key: str | None = None
@@ -73,6 +75,19 @@ async def search_rag(
     embedding_model = request.app.state.settings.rag_embedding_model
     redis_client = getattr(request.app.state, "redis_client", None)
     settings = request.app.state.settings
+    visibility_by_role = {
+        "CUSTOMER": ("PUBLIC",),
+        "SUPPORT": ("PUBLIC", "SUPPORT"),
+        "ADMIN": ("PUBLIC", "SUPPORT", "ADMIN"),
+    }
+    visible_visibilities = visibility_by_role.get(_current_user_role)
+
+    if visible_visibilities is None:
+        return _rag_error_response(
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="rag_forbidden",
+            message="当前用户没有知识库访问权限。",
+        )
 
     if embeddings is None:
         return _rag_error_response(
@@ -88,6 +103,7 @@ async def search_rag(
                 embedding_model=settings.rag_embedding_model,
                 embedding_dimensions=settings.rag_embedding_dimensions,
                 limit=limit,
+                visible_visibilities=visible_visibilities,
             )
             cached_value = await get_cache_value(redis_client, cache_key)
 
@@ -97,7 +113,12 @@ async def search_rag(
                 except ValidationError:
                     pass
         context = await build_rag_context(
-            engine, embeddings, query, limit=limit, embedding_model=embedding_model
+            engine,
+            embeddings,
+            query,
+            limit=limit,
+            embedding_model=embedding_model,
+            visible_visibilities=visible_visibilities,
         )
     except RagEmbeddingError:
         return _rag_error_response(

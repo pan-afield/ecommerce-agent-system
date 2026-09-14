@@ -26,10 +26,15 @@ def build_rag_cache_key(
     embedding_model: str,
     embedding_dimensions: int,
     limit: int,
+    visible_visibilities: tuple[str, ...] = ("PUBLIC",),
 ) -> str:
     normalized_query = query.strip()
+    visibility_scope = ",".join(sorted(set(visible_visibilities)))
 
-    return f"rag:v1:{embedding_model}:{embedding_dimensions}:limit={limit}:{normalized_query}"
+    return (
+        f"rag:v1:{embedding_model}:{embedding_dimensions}:"
+        f"visibility={visibility_scope}:limit={limit}:{normalized_query}"
+    )
 
 
 def serialize_cache_value(value: object) -> str:

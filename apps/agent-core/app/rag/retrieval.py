@@ -20,6 +20,7 @@ async def retrieve_knowledge(
     *,
     limit: int = 3,
     embedding_model: str,
+    visible_visibilities: tuple[str, ...] = ("PUBLIC",),
 ) -> list[HybridSearchResult]:
     """执行语义和关键词两条检索分支，再融合为稳定排序结果。"""
     normalized_query = query.strip()
@@ -31,12 +32,13 @@ async def retrieve_knowledge(
     # 异步生成查询向量
     query_embedding = await embeddings.aembed_query(normalized_query)
 
-    # 异步执行语义检索和关键词检索
+    # 异步执行语义检索
     semantic_results = await search_similar_knowledge_chunks(
         engine,
         query_embedding,
         limit=limit,
         embedding_model=embedding_model,
+        visible_visibilities=visible_visibilities,
     )
 
     # 异步执行关键词检索
@@ -44,6 +46,7 @@ async def retrieve_knowledge(
         engine,
         normalized_query,
         limit=limit,
+        visible_visibilities=visible_visibilities,
     )
 
     qualified_semantic_results = [

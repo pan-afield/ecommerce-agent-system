@@ -7,7 +7,7 @@ from typing import cast
 from app.core.config import Settings, get_settings
 from app.core.database import create_database_engine
 from app.core.redis import create_redis_client, invalidate_rag_cache
-from app.rag.chunking import KnowledgeChunk
+from app.rag.chunking import ALLOWED_VISIBILITIES, KnowledgeChunk
 from app.rag.ingestion import (
     ingest_knowledge_chunks,
     load_policy_files_chunks,
@@ -60,6 +60,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description="将企业政策文档导入本地 RAG 知识库。",
     )
     parser.add_argument(
+        "--visibility",
+        choices=ALLOWED_VISIBILITIES,
+        default="PUBLIC",
+        help="知识块可见性，默认 PUBLIC。",
+    )
+    parser.add_argument(
         "file_paths",
         nargs="+",
         type=Path,
@@ -78,8 +84,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_argument_parser().parse_args(argv)
     file_paths = cast(list[Path], arguments.file_paths)
     rebuild = cast(bool, arguments.rebuild)
-
-    chunks = load_policy_files_chunks(file_paths)
+    visibility = cast(str, arguments.visibility)
+    chunks = load_policy_files_chunks(
+        file_paths,
+        visibility=visibility,
+    )
     count = asyncio.run(
         write_policy_chunks(
             get_settings(),

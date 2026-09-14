@@ -127,6 +127,16 @@ def test_argument_parser_accepts_multiple_files_and_rebuild_mode(
 
     assert arguments.file_paths == [Path("refund.md"), Path("shipping.txt")]
     assert arguments.rebuild is expected_rebuild
+    assert arguments.visibility == "PUBLIC"
+
+
+@pytest.mark.parametrize("visibility", ["PUBLIC", "SUPPORT", "ADMIN"])
+def test_argument_parser_accepts_visibility_scope(visibility: str) -> None:
+    arguments = ingestion_cli.build_argument_parser().parse_args(
+        ["--visibility", visibility, "refund.md"]
+    )
+
+    assert arguments.visibility == visibility
 
 
 def test_argument_parser_requires_at_least_one_file() -> None:
@@ -155,7 +165,10 @@ def test_main_loads_files_runs_async_write_and_reports_count(
     exit_code = ingestion_cli.main(argv)
 
     assert exit_code == 0
-    load_files.assert_called_once_with([Path("refund.md")])
+    load_files.assert_called_once_with(
+        [Path("refund.md")],
+        visibility="PUBLIC",
+    )
     get_settings.assert_called_once_with()
     write.assert_awaited_once_with(settings, chunks, rebuild=rebuild)
     assert capsys.readouterr().out == "已写入 2 个知识块。\n"

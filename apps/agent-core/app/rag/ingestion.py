@@ -64,6 +64,7 @@ async def ingest_policy_text(
     text: str,
     *,
     embedding_model: str,
+    visibility: str = "PUBLIC",
 ) -> int:
     """将一份纯文本政策转换为 Document、切片、向量化并写入知识库。"""
     document = Document(
@@ -73,6 +74,7 @@ async def ingest_policy_text(
     chunks = chunk_policy_text(
         str(document.metadata["source_id"]),
         document.text,
+        visibility=visibility,
     )
 
     return await ingest_knowledge_chunks(
@@ -90,9 +92,10 @@ async def ingest_policy_pdf(
     pdf_bytes: bytes,
     *,
     embedding_model: str,
+    visibility: str = "PUBLIC",
 ) -> int:
     """解析 PDF 的页码和文本，再复用通用知识块入库流程。"""
-    chunks = chunk_pdf_document(source_id, pdf_bytes)
+    chunks = chunk_pdf_document(source_id, pdf_bytes, visibility=visibility)
 
     return await ingest_knowledge_chunks(
         engine,
@@ -102,16 +105,17 @@ async def ingest_policy_pdf(
     )
 
 
-def load_policy_file_chunks(file_path: Path) -> list[KnowledgeChunk]:
+def load_policy_file_chunks(
+    file_path: Path,
+    *,
+    visibility: str = "PUBLIC",
+) -> list[KnowledgeChunk]:
     """按扩展名读取单个政策文件；不负责 embedding 或数据库写入。"""
     source_id = file_path.name
     suffix = file_path.suffix.lower()
 
     if suffix == ".pdf":
-        return chunk_pdf_document(
-            source_id,
-            file_path.read_bytes(),
-        )
+        return chunk_pdf_document(source_id, file_path.read_bytes(), visibility=visibility)
 
     if suffix in {".txt", ".md"}:
         document = Document(
@@ -121,6 +125,7 @@ def load_policy_file_chunks(file_path: Path) -> list[KnowledgeChunk]:
         return chunk_policy_text(
             str(document.metadata["source_id"]),
             document.text,
+            visibility=visibility,
         )
 
     raise ValueError("policy file must use .txt, .md, or .pdf")
@@ -128,6 +133,8 @@ def load_policy_file_chunks(file_path: Path) -> list[KnowledgeChunk]:
 
 def load_policy_files_chunks(
     file_paths: list[Path],
+    *,
+    visibility: str = "PUBLIC",
 ) -> list[KnowledgeChunk]:
     """读取多个政策文件，并在进入向量化前拒绝重复文件名。"""
     source_ids = [file_path.name for file_path in file_paths]
@@ -138,6 +145,6 @@ def load_policy_files_chunks(
     chunks: list[KnowledgeChunk] = []
 
     for file_path in file_paths:
-        chunks.extend(load_policy_file_chunks(file_path))
+        chunks.extend(load_policy_file_chunks(file_path, visibility=visibility))
 
     return chunks

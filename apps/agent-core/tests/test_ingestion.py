@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from langchain_core.embeddings import Embeddings
@@ -269,6 +269,7 @@ async def test_ingest_policy_text_chunks_then_ingests_with_model_identity(
         " returns-policy ",
         " Seven-day returns are supported. ",
         embedding_model="test-local-model",
+        visibility="SUPPORT",
     )
 
     assert count == 1
@@ -279,6 +280,7 @@ async def test_ingest_policy_text_chunks_then_ingests_with_model_identity(
     chunk_text.assert_called_once_with(
         "document-source",
         "Document text used for chunking.",
+        visibility="SUPPORT",
     )
     ingest_chunks.assert_awaited_once_with(
         engine,
@@ -315,11 +317,16 @@ async def test_ingest_policy_pdf_preserves_page_chunks_and_model_identity(
         " refund-policy.pdf ",
         pdf_bytes,
         embedding_model="test-local-model",
+        visibility="ADMIN",
     )
 
     assert count == 1
     assert chunks[0].page_number == 2
-    chunk_pdf.assert_called_once_with(" refund-policy.pdf ", pdf_bytes)
+    chunk_pdf.assert_called_once_with(
+        " refund-policy.pdf ",
+        pdf_bytes,
+        visibility="ADMIN",
+    )
     ingest_chunks.assert_awaited_once_with(
         engine,
         chunks,
@@ -336,11 +343,12 @@ def test_load_policy_text_file_chunks_uses_utf8_and_filename_as_source(
     file_path = tmp_path / f"退款政策{suffix}"
     file_path.write_text("签收后七天内可申请退货。", encoding="utf-8")
 
-    chunks = ingestion.load_policy_file_chunks(file_path)
+    chunks = ingestion.load_policy_file_chunks(file_path, visibility="SUPPORT")
 
     assert len(chunks) == 1
     assert chunks[0].source_id == file_path.name
     assert chunks[0].content == "签收后七天内可申请退货。"
+    assert chunks[0].visibility == "SUPPORT"
     assert str(tmp_path) not in chunks[0].source_id
 
 
@@ -362,10 +370,14 @@ def test_load_policy_pdf_file_chunks_accepts_case_insensitive_suffix(
     chunk_pdf = Mock(return_value=expected_chunks)
     monkeypatch.setattr(ingestion, "chunk_pdf_document", chunk_pdf)
 
-    chunks = ingestion.load_policy_file_chunks(file_path)
+    chunks = ingestion.load_policy_file_chunks(file_path, visibility="ADMIN")
 
     assert chunks == expected_chunks
-    chunk_pdf.assert_called_once_with("policy.PDF", b"fake-pdf-bytes")
+    chunk_pdf.assert_called_once_with(
+        "policy.PDF",
+        b"fake-pdf-bytes",
+        visibility="ADMIN",
+    )
 
 
 def test_load_policy_file_chunks_rejects_unsupported_suffix(tmp_path: Path) -> None:
@@ -399,12 +411,15 @@ def test_load_policy_files_chunks_preserves_file_and_chunk_order(
     load_file = Mock(side_effect=[first_chunks, second_chunks])
     monkeypatch.setattr(ingestion, "load_policy_file_chunks", load_file)
 
-    chunks = ingestion.load_policy_files_chunks([first_path, second_path])
+    chunks = ingestion.load_policy_files_chunks(
+        [first_path, second_path],
+        visibility="SUPPORT",
+    )
 
     assert chunks == [*first_chunks, *second_chunks]
     assert load_file.call_args_list == [
-        ((first_path,),),
-        ((second_path,),),
+        call(first_path, visibility="SUPPORT"),
+        call(second_path, visibility="SUPPORT"),
     ]
 
 

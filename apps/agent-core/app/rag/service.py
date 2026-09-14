@@ -24,6 +24,7 @@ async def build_rag_context(
     *,
     limit: int = 3,
     embedding_model: str,
+    visible_visibilities: tuple[str, ...] = ("PUBLIC",),
 ) -> RagContext:
     results = await retrieve_knowledge(
         engine,
@@ -31,6 +32,7 @@ async def build_rag_context(
         query,
         limit=limit,
         embedding_model=embedding_model,
+        visible_visibilities=visible_visibilities,
     )
 
     citations = build_knowledge_citations(results)

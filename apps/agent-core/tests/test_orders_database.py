@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.main import create_app
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+TEST_JWT_ISSUER = "ecommerce-agent-system"
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +48,8 @@ async def test_order_detail_uses_isolated_postgres() -> None:
                 {
                     "sub": "demo-user-li",
                     "exp": datetime.now(UTC) + timedelta(minutes=5),
+                    "iss": TEST_JWT_ISSUER,
+                    "token_type": "access",
                 },
                 TEST_JWT_SECRET,
                 algorithm="HS256",
@@ -106,6 +109,8 @@ async def test_refund_application_allows_only_one_non_rejected_record_per_order(
             {
                 "sub": "demo-user-li",
                 "exp": datetime.now(UTC) + timedelta(minutes=5),
+                "iss": TEST_JWT_ISSUER,
+                "token_type": "access",
             },
             TEST_JWT_SECRET,
             algorithm="HS256",

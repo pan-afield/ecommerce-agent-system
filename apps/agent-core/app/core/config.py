@@ -62,7 +62,6 @@ class Settings(BaseSettings):
         "openai_base_url",
         "openai_reasoning_effort",
         "jwt_secret_key",
-        "refund_approver_user_id",
         "rag_embedding_cache_dir",
         mode="before",
     )
@@ -88,13 +87,6 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="JWT_SECRET_KEY",
         min_length=32,
-    )
-
-    refund_approver_user_id: str | None = Field(
-        default=None,
-        validation_alias="REFUND_APPROVER_USER_ID",
-        min_length=1,
-        max_length=64,
     )
 
     rag_embedding_model: str = Field(
@@ -131,6 +123,27 @@ class Settings(BaseSettings):
         validation_alias="REDIS_CACHE_TTL_SECONDS",
         gt=0,
         le=3600,
+    )
+
+    jwt_issuer: str = Field(
+        default="ecommerce-agent-system",
+        validation_alias="JWT_ISSUER",
+        min_length=1,
+        max_length=100,
+    )
+
+    jwt_access_token_ttl_seconds: int = Field(
+        default=900,
+        validation_alias="JWT_ACCESS_TOKEN_TTL_SECONDS",
+        gt=0,
+        le=86_400,
+    )
+
+    jwt_refresh_token_ttl_seconds: int = Field(
+        default=2_592_000,
+        validation_alias="JWT_REFRESH_TOKEN_TTL_SECONDS",
+        gt=0,
+        le=31_536_000,
     )
 
 

@@ -86,6 +86,26 @@ def test_chunk_policy_text_keeps_markdown_heading_with_following_body() -> None:
     assert all(chunk.content.strip() != "# 退款政策" for chunk in chunks)
 
 
+@pytest.mark.parametrize("visibility", ["PUBLIC", "SUPPORT", "ADMIN"])
+def test_chunk_policy_text_preserves_allowed_visibility(visibility: str) -> None:
+    chunks = chunk_policy_text(
+        "policy-v1",
+        "政策内容。",
+        visibility=visibility,
+    )
+
+    assert chunks[0].visibility == visibility
+
+
+@pytest.mark.parametrize("visibility", ["", "SUPORT", "internal"])
+def test_chunk_policy_text_rejects_unknown_visibility(visibility: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match="visibility must be one of PUBLIC, SUPPORT, or ADMIN",
+    ):
+        chunk_policy_text("policy-v1", "政策内容。", visibility=visibility)
+
+
 def test_chunk_policy_text_preserves_page_provenance_in_chunk_and_id() -> None:
     page_one = chunk_policy_text(
         "refund-policy-v1",

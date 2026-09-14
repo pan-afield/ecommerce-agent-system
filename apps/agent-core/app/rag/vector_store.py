@@ -56,6 +56,7 @@ STORE_EMBEDDED_CHUNK_STATEMENT = text(
         chunk_id,
         source_id,
         page_number,
+        visibility,
         chunk_index,
         content,
         embedding,
@@ -65,6 +66,7 @@ STORE_EMBEDDED_CHUNK_STATEMENT = text(
         :chunk_id,
         :source_id,
         :page_number,
+        :visibility,
         :chunk_index,
         :content,
         :embedding,
@@ -115,6 +117,7 @@ async def store_embedded_knowledge_chunks(
                     "content": embedded_chunk.chunk.content,
                     "embedding": embedded_chunk.embedding,
                     "embedding_model": embedded_chunk.embedding_model,
+                    "visibility": embedded_chunk.chunk.visibility,
                 },
             )
             count += 1 if result.scalar_one_or_none() is not None else 0
@@ -153,6 +156,7 @@ async def replace_all_embedded_knowledge_chunks(
                     "content": embedded_chunk.chunk.content,
                     "embedding": embedded_chunk.embedding,
                     "embedding_model": embedded_chunk.embedding_model,
+                    "visibility": embedded_chunk.chunk.visibility,
                 },
             )
             count += 1 if result.scalar_one_or_none() is not None else 0
@@ -174,6 +178,7 @@ async def search_similar_knowledge_chunks(
     *,
     limit: int = 3,
     embedding_model: str,
+    visible_visibilities: tuple[str, ...] = ("PUBLIC",),
 ) -> list[SemanticSearchResult]:
     """按向量距离升序搜索知识块；``limit`` 必须大于零。"""
     if limit <= 0:
@@ -193,10 +198,12 @@ async def search_similar_knowledge_chunks(
         FROM agent_core.knowledge_chunks
         WHERE embedding IS NOT NULL
         AND embedding_model = :embedding_model
+        AND visibility IN :visible_visibilities
         ORDER BY distance ASC, chunk_id ASC
         LIMIT :limit
         """
     ).bindparams(
+        bindparam("visible_visibilities", expanding=True),
         bindparam("query_embedding", type_=Vector(EMBEDDING_DIMENSIONS)),
     )
 
@@ -216,6 +223,7 @@ async def search_similar_knowledge_chunks(
                 "query_embedding": query_embedding,
                 "limit": limit,
                 "embedding_model": embedding_model,
+                "visible_visibilities": visible_visibilities,
             },
         )
         rows = result.mappings().all()
@@ -239,6 +247,7 @@ async def search_knowledge_chunks_by_keyword(
     query: str,
     *,
     limit: int = 3,
+    visible_visibilities: tuple[str, ...] = ("PUBLIC",),
 ) -> list[KnowledgeChunk]:
     """按大小写不敏感的内容包含关系检索，作为混合检索的关键词分支。"""
     normalized_query = query.strip()
@@ -256,13 +265,16 @@ async def search_knowledge_chunks_by_keyword(
             chunk_index,
             content
         FROM agent_core.knowledge_chunks
-        WHERE strpos(lower(content), lower(:query)) > 0
+        WHERE visibility IN :visible_visibilities
+            AND strpos(lower(content), lower(:query)) > 0
         ORDER BY
             strpos(lower(content), lower(:query)) ASC,
             char_length(content) ASC,
             chunk_id ASC
         LIMIT :limit
         """
+    ).bindparams(
+        bindparam("visible_visibilities", expanding=True),
     )
     async with engine.connect() as connection:
         result = await connection.execute(
@@ -270,6 +282,7 @@ async def search_knowledge_chunks_by_keyword(
             {
                 "query": normalized_query,
                 "limit": limit,
+                "visible_visibilities": visible_visibilities,
             },
         )
         rows = result.mappings().all()

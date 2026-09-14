@@ -122,7 +122,11 @@ def test_chunk_pdf_document_uses_document_text_and_metadata(
     monkeypatch.setattr(pdf_module, "Document", document_constructor)
     monkeypatch.setattr(pdf_module, "chunk_policy_text", chunk_text)
 
-    chunks = pdf_module.chunk_pdf_document("input-source", b"pdf-bytes")
+    chunks = pdf_module.chunk_pdf_document(
+        "input-source",
+        b"pdf-bytes",
+        visibility="SUPPORT",
+    )
 
     assert chunks == expected_chunks
     extract_pages.assert_called_once_with("input-source", b"pdf-bytes")
@@ -134,4 +138,5 @@ def test_chunk_pdf_document_uses_document_text_and_metadata(
         "document-source",
         "Document text used for chunking.",
         page_number=7,
+        visibility="SUPPORT",
     )

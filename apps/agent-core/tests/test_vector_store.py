@@ -250,6 +250,10 @@ async def test_store_embedded_chunks_counts_new_rows_in_one_transaction() -> Non
         parameters["embedding_model"]
         for _, parameters in fake_engine.connection.executions
     ] == [embedded.embedding_model for embedded in chunks]
+    assert [
+        parameters["visibility"]
+        for _, parameters in fake_engine.connection.executions
+    ] == [embedded.chunk.visibility for embedded in chunks]
     assert all(
         isinstance(parameters, dict)
         for _, parameters in fake_engine.connection.executions
@@ -472,6 +476,8 @@ async def test_search_similar_chunks_maps_ranked_rows_with_stable_sql() -> None:
     assert "embedding <=> :query_embedding AS distance" in sql
     assert "WHERE embedding IS NOT NULL" in sql
     assert "AND embedding_model = :embedding_model" in sql
+    assert "AND visibility IN" in sql
+    assert "visible_visibilities" in sql
     assert "ORDER BY distance ASC, chunk_id ASC" in sql
     assert "LIMIT :limit" in sql
     assert str(statement._bindparams["query_embedding"].type) == "VECTOR(1024)"
@@ -479,6 +485,7 @@ async def test_search_similar_chunks_maps_ranked_rows_with_stable_sql() -> None:
         "query_embedding": query_embedding,
         "embedding_model": "test-model",
         "limit": 2,
+        "visible_visibilities": ("PUBLIC",),
     }
 
 
@@ -580,12 +587,18 @@ async def test_search_chunks_by_keyword_strips_query_and_maps_rows() -> None:
     assert fake_engine.connection.execution is not None
     statement, parameters = fake_engine.connection.execution
     sql = str(statement)
+    assert "WHERE visibility IN" in sql
+    assert "visible_visibilities" in sql
     assert "strpos(lower(content), lower(:query)) > 0" in sql
     assert "strpos(lower(content), lower(:query)) ASC" in sql
     assert "char_length(content) ASC" in sql
     assert "chunk_id ASC" in sql
     assert "LIMIT :limit" in sql
-    assert parameters == {"query": "退款审核", "limit": 5}
+    assert parameters == {
+        "query": "退款审核",
+        "limit": 5,
+        "visible_visibilities": ("PUBLIC",),
+    }
 
 
 async def test_search_chunks_by_keyword_returns_empty_list_for_no_matches() -> None:

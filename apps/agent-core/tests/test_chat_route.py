@@ -22,6 +22,7 @@ from app.services.chat import (
 )
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
+TEST_JWT_ISSUER = "ecommerce-agent-system"
 
 
 class FakeRouteChatModel:
@@ -46,6 +47,8 @@ def make_auth_headers(sub: str = "demo-user-li") -> dict[str, str]:
         {
             "sub": sub,
             "exp": datetime.now(UTC) + timedelta(minutes=5),
+            "iss": TEST_JWT_ISSUER,
+            "token_type": "access",
         },
         TEST_JWT_SECRET,
         algorithm="HS256",
