@@ -50,3 +50,32 @@ is provided for workspace integration but must only be run intentionally.
   different owner.
 - Missing and non-owned orders both return `404`; database failures return a sanitized `503`.
 - See `docs/learning/v0.2-backend.md` for the evolutionary implementation and database boundary.
+
+## Knowledge visibility acceptance
+
+The RAG route filters public knowledge by the authenticated user's database role:
+
+- `CUSTOMER`: `PUBLIC`
+- `SUPPORT`: `PUBLIC` and `SUPPORT`
+- `ADMIN`: `PUBLIC`, `SUPPORT`, and `ADMIN`
+
+Local, non-sensitive fixtures are provided in `tests/fixtures/rag-visibility/`. From the
+repository root, run the following commands after configuring `DATABASE_URL` and applying the
+`knowledge_chunks.visibility` migrations:
+
+```bash
+cd apps/agent-core
+.venv/bin/python -m app.rag.ingestion_cli \
+  --visibility PUBLIC tests/fixtures/rag-visibility/public-policy.md
+.venv/bin/python -m app.rag.ingestion_cli \
+  --visibility SUPPORT tests/fixtures/rag-visibility/support-policy.md
+.venv/bin/python -m app.rag.ingestion_cli \
+  --visibility ADMIN tests/fixtures/rag-visibility/admin-policy.md
+```
+
+Run each command without `--rebuild`: rebuild replaces the whole knowledge table and would remove
+the previously imported visibility scopes. Sign in with the role accounts documented in
+`packages/database/README.md`, then query the same policy phrase. A customer should receive only
+the public citation; support should receive public and support citations; admin should receive all
+three. The API decides visibility from the database role, so clients must not send or invent a
+visibility value.

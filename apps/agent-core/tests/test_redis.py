@@ -74,6 +74,35 @@ def test_build_rag_cache_key_separates_embedding_model_and_dimensions() -> None:
     assert len({base, different_model, different_dimensions}) == 3
 
 
+def test_build_rag_cache_key_separates_visibility_scopes() -> None:
+    customer = build_rag_cache_key(
+        "退款政策",
+        embedding_model="BAAI/bge-m3",
+        embedding_dimensions=1024,
+        limit=3,
+        visible_visibilities=("PUBLIC",),
+    )
+    support = build_rag_cache_key(
+        "退款政策",
+        embedding_model="BAAI/bge-m3",
+        embedding_dimensions=1024,
+        limit=3,
+        visible_visibilities=("PUBLIC", "SUPPORT"),
+    )
+    admin = build_rag_cache_key(
+        "退款政策",
+        embedding_model="BAAI/bge-m3",
+        embedding_dimensions=1024,
+        limit=3,
+        visible_visibilities=("PUBLIC", "SUPPORT", "ADMIN"),
+    )
+
+    assert len({customer, support, admin}) == 3
+    assert "visibility=PUBLIC:" in customer
+    assert "visibility=PUBLIC,SUPPORT:" in support
+    assert "visibility=ADMIN,PUBLIC,SUPPORT:" in admin
+
+
 def test_build_rag_cache_key_separates_result_limit() -> None:
     first = build_rag_cache_key(
         "退款政策",

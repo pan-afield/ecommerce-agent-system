@@ -236,6 +236,77 @@ async def test_rag_search_maps_user_role_to_visibility_scope(
     assert captured == [expected_visibility]
 
 
+@pytest.mark.parametrize(
+    ("user_id", "expected_sources"),
+    [
+        ("customer-001", ["public-policy"]),
+        ("support-001", ["public-policy", "support-policy"]),
+        ("admin-001", ["public-policy", "support-policy", "admin-policy"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_rag_search_returns_only_role_visible_citations(
+    monkeypatch: pytest.MonkeyPatch,
+    user_id: str,
+    expected_sources: list[str],
+) -> None:
+    app = create_rag_test_app()
+    citations_by_visibility = [
+        (
+            "PUBLIC",
+            KnowledgeCitation(
+                source_id="public-policy",
+                chunk_id="p" * 64,
+                page_number=1,
+                content="公共退款政策。",
+                score=0.9,
+            ),
+        ),
+        (
+            "SUPPORT",
+            KnowledgeCitation(
+                source_id="support-policy",
+                chunk_id="s" * 64,
+                page_number=1,
+                content="客服处理政策。",
+                score=0.8,
+            ),
+        ),
+        (
+            "ADMIN",
+            KnowledgeCitation(
+                source_id="admin-policy",
+                chunk_id="a" * 64,
+                page_number=1,
+                content="管理员运营政策。",
+                score=0.7,
+            ),
+        ),
+    ]
+
+    async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
+        visible = cast(tuple[str, ...], kwargs["visible_visibilities"])
+        citations = [
+            citation
+            for visibility, citation in citations_by_visibility
+            if visibility in visible
+        ]
+        return RagContext(query="退款政策", citations=citations)
+
+    monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/v1/rag/search",
+            params={"query": "退款政策"},
+            headers=auth_headers(user_id),
+        )
+
+    assert response.status_code == 200
+    assert [item["source_id"] for item in response.json()["citations"]] == expected_sources
+
+
 @pytest.mark.asyncio
 async def test_rag_search_rejects_unknown_database_role(
     monkeypatch: pytest.MonkeyPatch,
