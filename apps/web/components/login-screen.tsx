@@ -1,0 +1,9 @@
+"use client";
+import { useState, type FormEvent } from "react";
+import { Button } from "@ecommerce-agent-system/ui";
+import { login } from "@/lib/auth-client";
+export function LoginScreen({ onSuccess }: { onSuccess: () => void }) {
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setError(""); setBusy(true); try { await login(email, password); onSuccess(); } catch (e) { setError(e instanceof Error ? e.message : "登录失败，请稍后重试。"); } finally { setBusy(false); } }
+  return <main className="grid min-h-dvh place-items-center bg-canvas px-5"><form onSubmit={submit} className="w-full max-w-md rounded-lg border border-line bg-surface-raised p-7 shadow-shell" aria-label="登录表单"><p className="font-mono text-xs uppercase tracking-widest text-accent">Relay Desk</p><h1 className="mt-3 text-2xl font-semibold text-ink">登录客服工作台</h1><p className="mt-2 text-sm text-ink-muted">使用测试账号进入对应角色的验收环境。</p><label className="mt-7 block text-sm font-medium text-ink" htmlFor="email">邮箱<input id="email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} className="mt-2 h-11 w-full rounded-md border border-line-strong bg-surface px-3" /></label><label className="mt-4 block text-sm font-medium text-ink" htmlFor="password">密码<input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} className="mt-2 h-11 w-full rounded-md border border-line-strong bg-surface px-3" /></label>{error && <p role="alert" className="mt-4 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p>}<Button type="submit" className="mt-6 w-full" disabled={busy}>{busy ? "正在登录…" : "登录"}</Button></form></main>;
+}

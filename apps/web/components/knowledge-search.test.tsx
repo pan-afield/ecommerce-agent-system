@@ -72,6 +72,21 @@ describe("KnowledgeSearch", () => {
     expect(screen.queryByRole("region", { name: "知识库证据" })).not.toBeInTheDocument();
   });
 
+  it("shows a permission error as an error, not as an empty result", async () => {
+    const user = userEvent.setup();
+    searchKnowledgeMock.mockRejectedValue(
+      new RagApiError("rag_forbidden", "当前用户没有知识库访问权限。", 403),
+    );
+    render(<KnowledgeSearch />);
+
+    await user.type(screen.getByRole("textbox", { name: "知识库查询" }), "内部政策");
+    await user.click(screen.getByRole("button", { name: "检索知识库" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("当前用户没有知识库访问权限。");
+    expect(screen.queryByText("未检索到相关知识库证据，请换一种问法重试。")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试知识库检索" })).toBeInTheDocument();
+  });
+
   it("disables duplicate submissions, announces loading, and retries stable errors", async () => {
     const user = userEvent.setup();
     let resolveSearch: ((value: { query: string; citations: [] }) => void) | undefined;

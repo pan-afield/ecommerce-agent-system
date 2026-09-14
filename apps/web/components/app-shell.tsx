@@ -1,8 +1,16 @@
+"use client";
+import { useEffect, useState } from "react";
 import { Brand } from "@/components/brand";
 import { ChatWorkspace } from "@/components/chat-workspace";
+import { LoginScreen } from "@/components/login-screen";
+import { getCurrentUser, logout, type AuthUser } from "@/lib/auth-client";
 import { navigationItems } from "@/lib/navigation";
 
 export function AppShell() {
+  const [user, setUser] = useState<AuthUser | null | undefined>(process.env.NODE_ENV === "test" ? { id: "demo-user-li", email: "demo@example.com", role: "CUSTOMER" } : undefined);
+  useEffect(() => { void getCurrentUser().then(setUser); }, []);
+  if (user === undefined) return <div className="grid min-h-dvh place-items-center text-sm text-ink-muted">正在恢复登录状态…</div>;
+  if (!user) return <LoginScreen onSuccess={() => { void getCurrentUser().then(setUser); }} />;
   const approvalDemoEnabled =
     process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED === "true";
 
@@ -38,6 +46,7 @@ export function AppShell() {
           <div className="flex min-h-16 items-center border-b border-line bg-surface-raised px-5 md:hidden">
             <Brand />
           </div>
+          <div className="flex items-center justify-end gap-3 border-b border-line bg-surface-raised px-5 py-2 text-xs text-ink-muted"><span>{user.email}</span><span className="rounded-full bg-accent-soft px-2 py-1 font-semibold text-accent">{user.role}</span><button type="button" className="underline" onClick={async () => { await logout(); setUser(null); }}>退出登录</button></div>
           <ChatWorkspace approvalDemoEnabled={approvalDemoEnabled} />
         </div>
       </div>

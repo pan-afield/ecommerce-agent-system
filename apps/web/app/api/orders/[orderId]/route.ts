@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
 import { getBackendOrderDetail, isOrderDetail } from "@/lib/order-contract";
-import { createAgentCoreAuthorization } from "@/lib/server-auth";
+import { getSessionAgentCoreAuthorization as createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   ORDER_ID_MAX_LENGTH,
   type OrderError,
@@ -53,7 +53,7 @@ export async function GET(_request: Request, context: OrderRouteContext) {
   }
 
   const agentCoreUrl = (process.env.AGENT_CORE_URL || DEFAULT_AGENT_CORE_URL).replace(/\/+$/, "");
-  const authorization = createAgentCoreAuthorization();
+  const authorization = await createAgentCoreAuthorization();
   if (authorization === null) {
     return errorResponse(
       503,

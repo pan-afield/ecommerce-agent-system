@@ -17,6 +17,7 @@ async function main() {
     update: {
       name: '李明',
       email: 'li.ming@example.com',
+      role: 'CUSTOMER',
       passwordHash:
         '$argon2id$v=19$m=65536,t=3,p=4$BSp3cW2zyILTV2ohP2RftA$pO4qVM8T9k8cNuDEATOXHVVzGZ9tCguBlgY8T+wlXmU',
     },
@@ -34,13 +35,53 @@ async function main() {
     update: {
       name: '王芳',
       email: 'wang.fang@example.com',
+      role: 'CUSTOMER',
     },
     create: {
       id: 'demo-user-wang',
       name: '王芳',
       email: 'wang.fang@example.com',
+      role: 'CUSTOMER',
     },
   });
+
+  // Local-only accounts for manually verifying role-based knowledge visibility.
+  // Passwords are represented by Argon2id hashes and are documented in the
+  // development README, never returned by an API response.
+  const roleAccounts = [
+    {
+      id: 'demo-user-customer',
+      name: 'Customer Demo',
+      email: 'customer.demo@example.com',
+      passwordHash:
+        '$argon2id$v=19$m=65536,t=3,p=4$tO+T+7zvOJCcqlYfbLuJ/w$rKc34Sg2DZnXln7MmExg4VXe/GkdOFnhU7PZaAi6X0I',
+      role: 'CUSTOMER',
+    },
+    {
+      id: 'demo-user-support',
+      name: 'Support Demo',
+      email: 'support.demo@example.com',
+      passwordHash:
+        '$argon2id$v=19$m=65536,t=3,p=4$olozgslKPq0hESJy+Pm/+A$X8UV+uM/ZjGbMkWC3fKYGn3DS9otQ81IlzSbNgiQARo',
+      role: 'SUPPORT',
+    },
+    {
+      id: 'demo-user-admin',
+      name: 'Admin Demo',
+      email: 'admin.demo@example.com',
+      passwordHash:
+        '$argon2id$v=19$m=65536,t=3,p=4$UGxl1dKgY0aEa/135P3vFw$hl6IYevdGpYwCy/p6gRZTLCZEAqyXdmfULJuZFLkdt8',
+      role: 'ADMIN',
+    },
+  ];
+
+  for (const account of roleAccounts) {
+    await prisma.user.upsert({
+      where: { id: account.id },
+      update: account,
+      create: account,
+    });
+  }
 
   const liMingOrder = await prisma.order.upsert({
     where: { id: 'order-demo-001' },

@@ -53,6 +53,7 @@ describe("searchKnowledge", () => {
   it.each([
     ["rag_embedding_unavailable", "知识库向量服务暂时不可用。"],
     ["rag_database_incompatible", "知识库向量数据库配置不兼容。"],
+    ["rag_forbidden", "当前用户没有知识库访问权限。"],
   ] as const)("accepts stable %s errors", async (code, message) => {
     vi.stubGlobal(
       "fetch",

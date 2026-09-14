@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
 import { isBackendChatError, isChatResponse } from "@/lib/chat-contract";
-import { createAgentCoreAuthorization } from "@/lib/server-auth";
+import { getSessionAgentCoreAuthorization as createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   CHAT_CONTEXT_ID_MAX_LENGTH,
   CHAT_MESSAGE_MAX_LENGTH,
@@ -93,7 +93,7 @@ export async function POST(request: Request) {
     ...(threadId === undefined ? {} : { thread_id: threadId }),
     ...(requestId === undefined ? {} : { request_id: requestId }),
   };
-  const authorization = createAgentCoreAuthorization();
+  const authorization = await createAgentCoreAuthorization();
   if (authorization === null) {
     return errorResponse(
       503,

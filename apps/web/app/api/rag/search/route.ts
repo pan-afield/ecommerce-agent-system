@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
 import { isBackendRagError, isRagSearchResponse } from "@/lib/rag-contract";
-import { createAgentCoreAuthorization } from "@/lib/server-auth";
+import { getSessionAgentCoreAuthorization as createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   RAG_LIMIT_MAX,
   RAG_QUERY_MAX_LENGTH,
@@ -67,7 +67,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const authorization = createAgentCoreAuthorization();
+  const authorization = await createAgentCoreAuthorization();
   if (authorization === null) {
     return errorResponse(
       503,

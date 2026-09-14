@@ -65,6 +65,25 @@ describe("GET /api/rag/search", () => {
     expect(await response.json()).toEqual({ query: "不存在", citations: [] });
   });
 
+  it("preserves the stable forbidden response without exposing role internals", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_forbidden", message: "当前用户没有知识库访问权限。" } },
+          403,
+        ),
+      ),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: { code: "rag_forbidden", message: "当前用户没有知识库访问权限。" },
+    });
+  });
+
   it("preserves stable backend errors and sanitizes authentication details", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

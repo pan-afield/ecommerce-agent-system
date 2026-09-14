@@ -17,3 +17,15 @@ Prisma does not own vector indexes, retrieval chunks, agent checkpoints, or othe
 state. Those structures belong to versioned, backend-specific migrations under
 `apps/agent-core/migrations` when a later phase requires them. Both owners may share PostgreSQL,
 but a table must have exactly one migration owner.
+
+## Local role accounts
+
+The repeatable seed also creates three local-only accounts for V0.8 visibility
+acceptance. The seed stores Argon2id password hashes; these credentials must not
+be reused outside local development.
+
+| Role | Email | Password | Knowledge visibility |
+| --- | --- | --- | --- |
+| CUSTOMER | `customer.demo@example.com` | `CustomerDemo123!` | `PUBLIC` |
+| SUPPORT | `support.demo@example.com` | `SupportDemo123!` | `PUBLIC`, `SUPPORT` |
+| ADMIN | `admin.demo@example.com` | `AdminDemo123!` | `PUBLIC`, `SUPPORT`, `ADMIN` |
