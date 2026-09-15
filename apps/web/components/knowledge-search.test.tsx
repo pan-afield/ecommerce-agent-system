@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { searchKnowledgeMock, useReducedMotionMock } = vi.hoisted(() => ({
   searchKnowledgeMock: vi.fn(),
@@ -34,6 +34,10 @@ describe("KnowledgeSearch", () => {
     searchKnowledgeMock.mockReset();
     useReducedMotionMock.mockReset();
     useReducedMotionMock.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("queries the knowledge base and renders expandable evidence fields", async () => {
@@ -85,6 +89,42 @@ describe("KnowledgeSearch", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("当前用户没有知识库访问权限。");
     expect(screen.queryByText("未检索到相关知识库证据，请换一种问法重试。")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试知识库检索" })).toBeInTheDocument();
+  });
+
+  it("shows Retry-After, blocks repeated searches, and re-enables retry after cooldown", async () => {
+    const user = userEvent.setup();
+    searchKnowledgeMock
+      .mockRejectedValueOnce(
+        new RagApiError(
+          "rag_rate_limited",
+          "请求过于频繁，请在 1 秒后重试。",
+          429,
+          1,
+        ),
+      )
+      .mockResolvedValueOnce({ query: "退款政策", citations: [] });
+    render(<KnowledgeSearch />);
+
+    await user.type(screen.getByRole("textbox", { name: "知识库查询" }), "退款政策");
+    await user.click(screen.getByRole("button", { name: "检索知识库" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "请求过于频繁，请在 1 秒后重试。",
+    );
+    expect(screen.getByRole("button", { name: "1 秒后可重试知识库检索" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "检索知识库" })).toBeDisabled();
+
+    const retry = await screen.findByRole(
+      "button",
+      { name: "重试知识库检索" },
+      { timeout: 2_000 },
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("请求限制已解除，可以重试。");
+    expect(retry).toBeEnabled();
+    expect(screen.getByRole("button", { name: "检索知识库" })).toBeEnabled();
+
+    await user.click(retry);
+    expect(searchKnowledgeMock).toHaveBeenCalledTimes(2);
   });
 
   it("disables duplicate submissions, announces loading, and retries stable errors", async () => {

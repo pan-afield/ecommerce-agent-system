@@ -6,10 +6,10 @@ import {
   type ChatApiError,
 } from "./chat-api";
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -70,6 +70,40 @@ describe("sendChatMessage", () => {
       code: "chat_timeout",
       message: "客服服务响应超时，请稍后重试。",
       status: 504,
+    });
+  });
+
+  it("exposes Retry-After for normal and streaming rate-limit responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          jsonResponse(
+            { error: { code: "chat_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+            429,
+            { "Retry-After": "7" },
+          ),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(
+            { error: { code: "chat_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+            429,
+            { "Retry-After": "11" },
+          ),
+        ),
+    );
+
+    await expect(sendChatMessage({ message: "你好" })).rejects.toMatchObject({
+      code: "chat_rate_limited",
+      message: "请求过于频繁，请在 7 秒后重试。",
+      retryAfterSeconds: 7,
+      status: 429,
+    });
+    await expect(streamChatMessage({ message: "你好" })).rejects.toMatchObject({
+      code: "chat_rate_limited",
+      message: "请求过于频繁，请在 11 秒后重试。",
+      retryAfterSeconds: 11,
+      status: 429,
     });
   });
 

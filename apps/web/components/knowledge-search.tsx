@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { Button, motionVariants } from "@ecommerce-agent-system/ui";
 import { AlertCircle, BookOpen, LoaderCircle, RotateCcw, Search } from "lucide-react";
@@ -8,6 +8,10 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { KnowledgeEvidence } from "@/components/knowledge-evidence";
 import { RagApiError, searchKnowledge } from "@/lib/rag-api";
+import {
+  DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  formatRateLimitMessage,
+} from "@/lib/retry-after";
 import { RAG_QUERY_MAX_LENGTH, type RagErrorDetail, type RagSearchResponse } from "@/types/rag";
 
 function normalizeRagError(error: unknown): RagErrorDetail {
@@ -26,15 +30,34 @@ export function KnowledgeSearch() {
   const [result, setResult] = useState<RagSearchResponse | null>(null);
   const [error, setError] = useState<RagErrorDetail | null>(null);
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const lastSubmittedQuery = useRef("");
   const requestInFlight = useRef(false);
   const shouldReduceMotion = useReducedMotion() ?? false;
   const normalizedQuery = query.trim();
-  const canSubmit = normalizedQuery.length > 0 && !activeQuery;
+  const canSubmit =
+    normalizedQuery.length > 0 && !activeQuery && cooldownSeconds === 0;
+  const errorMessage =
+    error?.code === "rag_rate_limited"
+      ? cooldownSeconds > 0
+        ? formatRateLimitMessage(cooldownSeconds)
+        : "请求限制已解除，可以重试。"
+      : error?.message;
+
+  useEffect(() => {
+    if (cooldownSeconds === 0) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCooldownSeconds((current) => Math.max(0, current - 1));
+    }, 1_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [cooldownSeconds]);
 
   async function requestSearch(requestedQuery: string) {
     const normalized = requestedQuery.trim();
-    if (!normalized || requestInFlight.current) {
+    if (!normalized || requestInFlight.current || cooldownSeconds > 0) {
       return;
     }
 
@@ -46,6 +69,11 @@ export function KnowledgeSearch() {
     try {
       setResult(await searchKnowledge(normalized));
     } catch (searchError) {
+      if (searchError instanceof RagApiError && searchError.code === "rag_rate_limited") {
+        setCooldownSeconds(
+          searchError.retryAfterSeconds ?? DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+        );
+      }
       setError(normalizeRagError(searchError));
     } finally {
       requestInFlight.current = false;
@@ -132,15 +160,22 @@ export function KnowledgeSearch() {
             >
               <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold leading-5">{error.message}</p>
+                <p aria-live="polite" className="text-xs font-semibold leading-5">
+                  {errorMessage}
+                </p>
                 <Button
-                  aria-label="重试知识库检索"
+                  aria-label={
+                    cooldownSeconds > 0
+                      ? `${cooldownSeconds} 秒后可重试知识库检索`
+                      : "重试知识库检索"
+                  }
                   className="mt-2 h-8 border-accent/30 bg-transparent px-2.5 text-xs text-accent hover:border-accent hover:bg-surface"
+                  disabled={cooldownSeconds > 0}
                   onClick={() => void requestSearch(lastSubmittedQuery.current)}
                   variant="secondary"
                 >
                   <RotateCcw className="size-3.5" aria-hidden="true" />
-                  重试
+                  {cooldownSeconds > 0 ? `${cooldownSeconds} 秒后重试` : "重试"}
                 </Button>
               </div>
             </motion.div>

@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getOrderMock, streamChatMessageMock, useReducedMotionMock } = vi.hoisted(() => ({
   getOrderMock: vi.fn(),
@@ -63,16 +63,25 @@ describe("ChatWorkspace", () => {
     useReducedMotionMock.mockReturnValue(false);
   });
 
-  it("keeps business tools outside the independently scrolling chat main area", async () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens business tools as a separate overlay without changing the chat main area", async () => {
     const user = userEvent.setup();
     render(<ChatWorkspace />);
 
     const chatMain = screen.getByRole("main", { name: "客服工作台" });
     expect(within(chatMain).queryByRole("heading", { name: "订单查询" })).not.toBeInTheDocument();
     expect(within(chatMain).queryByRole("heading", { name: "知识库检索" })).not.toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "业务工具" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "业务工具" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "打开知识库检索" }));
+    const knowledgeButton = screen.getByRole("button", { name: "打开知识库检索" });
+    await user.click(knowledgeButton);
+    expect(screen.getByRole("dialog", { name: "业务工具" })).toHaveClass("absolute");
+    expect(chatMain).toHaveAttribute("inert");
+    expect(knowledgeButton).toHaveAttribute("aria-expanded", "true");
+    expect(knowledgeButton).toHaveAccessibleName("关闭知识库检索");
     expect(screen.getByRole("tab", { name: "知识库" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -80,6 +89,7 @@ describe("ChatWorkspace", () => {
     expect(screen.getByText("已打开知识库检索。")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "关闭业务工具面板" }));
+    expect(chatMain).not.toHaveAttribute("inert");
     expect(screen.getByText("已关闭业务工具。")).toBeInTheDocument();
   });
 
@@ -208,19 +218,45 @@ describe("ChatWorkspace", () => {
     );
   });
 
-  it("shows a stable provider error and keeps the user message", async () => {
+  it("shows the chat Retry-After cooldown and restores send and retry", async () => {
     const user = userEvent.setup();
-    streamChatMessageMock.mockRejectedValue(
-      new ChatApiError("chat_rate_limited", "请求过于频繁，请稍后重试。", 429),
-    );
+    streamChatMessageMock
+      .mockRejectedValueOnce(
+        new ChatApiError(
+          "chat_rate_limited",
+          "请求过于频繁，请在 1 秒后重试。",
+          429,
+          1,
+        ),
+      )
+      .mockResolvedValueOnce({
+        assistant: { content: "冷却结束后回复成功。" },
+        model: "test-model",
+      });
     render(<ChatWorkspace />);
 
     await user.type(screen.getByRole("textbox", { name: "输入消息" }), "请回答");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
 
     expect(screen.getByText("请回答")).toBeInTheDocument();
-    expect(await screen.findByRole("alert")).toHaveTextContent("请求过于频繁，请稍后重试。");
-    expect(screen.getByRole("button", { name: "重试这条消息" })).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("请求过于频繁，请在 1 秒后重试。");
+    expect(screen.getByText("服务冷却中 · 1 秒后可发送")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+    expect(screen.getByRole("button", { name: "1 秒后可重试这条消息" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
+
+    const retry = await screen.findByRole(
+      "button",
+      { name: "重试这条消息" },
+      { timeout: 2_000 },
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("请求限制已解除，可以重试。");
+    expect(retry).toBeEnabled();
+
+    await user.click(retry);
+    expect(await screen.findByText("冷却结束后回复成功。")).toBeInTheDocument();
   });
 
   it("shows a stable message for browser network errors", async () => {

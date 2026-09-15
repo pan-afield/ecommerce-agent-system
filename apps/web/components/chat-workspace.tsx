@@ -38,6 +38,10 @@ import {
 } from "@/lib/chat-session";
 import { getOrder } from "@/lib/order-api";
 import {
+  DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  formatRateLimitMessage,
+} from "@/lib/retry-after";
+import {
   CHAT_MESSAGE_MAX_LENGTH,
   type ChatErrorDetail,
   type ChatStreamPhase,
@@ -70,6 +74,7 @@ function normalizeClientError(error: unknown): ChatErrorDetail {
 }
 
 interface ChatMessageItemProps {
+  cooldownSeconds: number;
   isBusy: boolean;
   message: LocalChatMessage;
   onRetry: (message: LocalChatMessage) => void;
@@ -77,12 +82,19 @@ interface ChatMessageItemProps {
 }
 
 function ChatMessageItem({
+  cooldownSeconds,
   isBusy,
   message,
   onRetry,
   reduceMotion,
 }: ChatMessageItemProps) {
   const isUser = message.role === "user";
+  const isRateLimited = message.error?.code === "chat_rate_limited";
+  const errorMessage = isRateLimited
+    ? cooldownSeconds > 0
+      ? formatRateLimitMessage(cooldownSeconds)
+      : "请求限制已解除，可以重试。"
+    : message.error?.message;
 
   return (
     <motion.li
@@ -153,16 +165,22 @@ function ChatMessageItem({
             >
               <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold leading-5">{message.error.message}</p>
+                <p aria-live="polite" className="text-xs font-semibold leading-5">
+                  {errorMessage}
+                </p>
                 <Button
-                  aria-label="重试这条消息"
+                  aria-label={
+                    cooldownSeconds > 0
+                      ? `${cooldownSeconds} 秒后可重试这条消息`
+                      : "重试这条消息"
+                  }
                   className="mt-2 h-8 border-accent/30 bg-transparent px-2.5 text-xs text-accent hover:border-accent hover:bg-surface"
-                  disabled={isBusy}
+                  disabled={isBusy || cooldownSeconds > 0}
                   onClick={() => onRetry(message)}
                   variant="secondary"
                 >
                   <RotateCcw className="size-3.5" aria-hidden="true" />
-                  重试
+                  {cooldownSeconds > 0 ? `${cooldownSeconds} 秒后重试` : "重试"}
                 </Button>
               </div>
             </motion.div>
@@ -185,6 +203,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionAnnouncement, setSessionAnnouncement] = useState("");
   const [streamPhase, setStreamPhase] = useState<ChatStreamPhase | null>(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const [activeTool, setActiveTool] = useState<BusinessTool>("order");
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolAnnouncement, setToolAnnouncement] = useState("");
@@ -199,6 +218,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
     sessionReady &&
     Boolean(threadId) &&
     !activeRequestId &&
+    cooldownSeconds === 0 &&
     trimmedDraft.length > 0 &&
     countCharacters(trimmedDraft) <= CHAT_MESSAGE_MAX_LENGTH;
 
@@ -226,8 +246,24 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
     });
   }, [activeRequestId, messages, shouldReduceMotion]);
 
+  useEffect(() => {
+    if (cooldownSeconds === 0) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setCooldownSeconds((current) => Math.max(0, current - 1));
+    }, 1_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [cooldownSeconds]);
+
   async function requestReply(userMessage: LocalChatMessage) {
-    if (requestInFlight.current || threadId === null || !userMessage.requestId) {
+    if (
+      requestInFlight.current ||
+      cooldownSeconds > 0 ||
+      threadId === null ||
+      !userMessage.requestId
+    ) {
       return;
     }
 
@@ -283,6 +319,11 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
         assistantMessage,
       ]);
     } catch (error) {
+      if (error instanceof ChatApiError && error.code === "chat_rate_limited") {
+        setCooldownSeconds(
+          error.retryAfterSeconds ?? DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+        );
+      }
       const chatError = normalizeClientError(error);
       setMessages((current) =>
         current.map((message) =>
@@ -368,9 +409,22 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
     setToolAnnouncement("已关闭业务工具。");
   }
 
+  function toggleTool(tool: BusinessTool) {
+    if (toolsOpen && activeTool === tool) {
+      closeTools();
+      return;
+    }
+
+    openTool(tool);
+  }
+
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-surface">
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface" aria-labelledby="workspace-title">
+      <main
+        aria-labelledby="workspace-title"
+        className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface"
+        inert={toolsOpen}
+      >
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
           <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.6</p>
@@ -401,23 +455,23 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           </AnimatePresence>
           <Button
             aria-controls="business-tools-panel"
-            aria-label="打开订单查询"
-            aria-pressed={activeTool === "order"}
+            aria-expanded={toolsOpen && activeTool === "order"}
+            aria-label={toolsOpen && activeTool === "order" ? "关闭订单查询" : "打开订单查询"}
             className="size-9 px-0"
-            onClick={() => openTool("order")}
+            onClick={() => toggleTool("order")}
             title="订单查询"
-            variant={activeTool === "order" ? "secondary" : "ghost"}
+            variant={toolsOpen && activeTool === "order" ? "secondary" : "ghost"}
           >
             <PackageCheck className="size-4" aria-hidden="true" />
           </Button>
           <Button
             aria-controls="business-tools-panel"
-            aria-label="打开知识库检索"
-            aria-pressed={activeTool === "knowledge"}
+            aria-expanded={toolsOpen && activeTool === "knowledge"}
+            aria-label={toolsOpen && activeTool === "knowledge" ? "关闭知识库检索" : "打开知识库检索"}
             className="size-9 px-0"
-            onClick={() => openTool("knowledge")}
+            onClick={() => toggleTool("knowledge")}
             title="知识库检索"
-            variant={activeTool === "knowledge" ? "secondary" : "ghost"}
+            variant={toolsOpen && activeTool === "knowledge" ? "secondary" : "ghost"}
           >
             <BookOpen className="size-4" aria-hidden="true" />
           </Button>
@@ -463,6 +517,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           <ol className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-5 py-8 sm:px-8">
             {messages.map((message) => (
               <ChatMessageItem
+                cooldownSeconds={cooldownSeconds}
                 isBusy={Boolean(activeRequestId)}
                 key={message.id}
                 message={message}
@@ -522,8 +577,10 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
               value={draft}
             />
             <div className="flex min-h-11 items-center justify-between border-t border-line px-3 py-2">
-              <p className="text-xs text-ink-muted" id="chat-message-hint">
-                Enter 发送 · Shift+Enter 换行
+              <p aria-live="polite" className="text-xs text-ink-muted" id="chat-message-hint">
+                {cooldownSeconds > 0
+                  ? `服务冷却中 · ${cooldownSeconds} 秒后可发送`
+                  : "Enter 发送 · Shift+Enter 换行"}
               </p>
               <div className="flex items-center gap-3">
                 <span className="font-mono text-[10px] text-ink-muted">

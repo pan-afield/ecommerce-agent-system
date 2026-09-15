@@ -1,14 +1,26 @@
 import { isRagError, isRagSearchResponse } from "@/lib/rag-contract";
+import {
+  DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  formatRateLimitMessage,
+  parseRetryAfterSeconds,
+} from "@/lib/retry-after";
 import type { RagErrorCode, RagSearchResponse } from "@/types/rag";
 
 export class RagApiError extends Error {
   readonly code: RagErrorCode;
+  readonly retryAfterSeconds: number | undefined;
   readonly status: number;
 
-  constructor(code: RagErrorCode, message: string, status: number) {
+  constructor(
+    code: RagErrorCode,
+    message: string,
+    status: number,
+    retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = "RagApiError";
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
     this.status = status;
   }
 }
@@ -51,7 +63,19 @@ export async function searchKnowledge(
 
   if (!response.ok) {
     if (isRagError(body)) {
-      throw new RagApiError(body.error.code, body.error.message, response.status);
+      const retryAfterSeconds =
+        body.error.code === "rag_rate_limited"
+          ? (parseRetryAfterSeconds(response.headers.get("retry-after")) ??
+            DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS)
+          : undefined;
+      throw new RagApiError(
+        body.error.code,
+        retryAfterSeconds === undefined
+          ? body.error.message
+          : formatRateLimitMessage(retryAfterSeconds),
+        response.status,
+        retryAfterSeconds,
+      );
     }
     throw new RagApiError(
       "rag_invalid_response",

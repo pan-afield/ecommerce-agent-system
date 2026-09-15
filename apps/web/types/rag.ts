@@ -7,6 +7,7 @@ export const BACKEND_RAG_ERROR_CODES = [
   "rag_embedding_unavailable",
   "rag_database_incompatible",
   "rag_forbidden",
+  "rag_rate_limited",
 ] as const;
 
 export const PROXY_RAG_ERROR_CODES = [

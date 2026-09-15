@@ -6,10 +6,10 @@ function request(url = "http://localhost/api/rag/search?query=退款政策&limit
   return new Request(url, { method: "GET" });
 }
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -82,6 +82,45 @@ describe("GET /api/rag/search", () => {
     expect(await response.json()).toEqual({
       error: { code: "rag_forbidden", message: "当前用户没有知识库访问权限。" },
     });
+  });
+
+  it("preserves rate-limit errors and a valid Retry-After delay", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+          429,
+          { "Retry-After": "10" },
+        ),
+      ),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("10");
+    expect(await response.json()).toEqual({
+      error: { code: "rag_rate_limited", message: "请求过于频繁，请稍后重试。" },
+    });
+  });
+
+  it("does not forward a malformed Retry-After value", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+          429,
+          { "Retry-After": "redis-key=private" },
+        ),
+      ),
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBeNull();
   });
 
   it("preserves stable backend errors and sanitizes authentication details", async () => {

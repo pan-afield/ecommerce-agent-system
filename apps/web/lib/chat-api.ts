@@ -3,6 +3,11 @@ import {
   isChatResponse,
   isChatStreamAssistantEvent,
 } from "@/lib/chat-contract";
+import {
+  DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
+  formatRateLimitMessage,
+  parseRetryAfterSeconds,
+} from "@/lib/retry-after";
 import type {
   ChatErrorCode,
   ChatRequest,
@@ -13,12 +18,19 @@ import type {
 
 export class ChatApiError extends Error {
   readonly code: ChatErrorCode;
+  readonly retryAfterSeconds: number | undefined;
   readonly status: number;
 
-  constructor(code: ChatErrorCode, message: string, status: number) {
+  constructor(
+    code: ChatErrorCode,
+    message: string,
+    status: number,
+    retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = "ChatApiError";
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
     this.status = status;
   }
 }
@@ -52,7 +64,19 @@ export async function sendChatMessage(payload: ChatRequest): Promise<ChatRespons
 
   if (!response.ok) {
     if (isChatError(body)) {
-      throw new ChatApiError(body.error.code, body.error.message, response.status);
+      const retryAfterSeconds =
+        body.error.code === "chat_rate_limited"
+          ? (parseRetryAfterSeconds(response.headers.get("retry-after")) ??
+            DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS)
+          : undefined;
+      throw new ChatApiError(
+        body.error.code,
+        retryAfterSeconds === undefined
+          ? body.error.message
+          : formatRateLimitMessage(retryAfterSeconds),
+        response.status,
+        retryAfterSeconds,
+      );
     }
 
     throw new ChatApiError(
@@ -131,7 +155,19 @@ async function readErrorResponse(response: Response): Promise<never> {
   }
 
   if (isChatError(body)) {
-    throw new ChatApiError(body.error.code, body.error.message, response.status);
+    const retryAfterSeconds =
+      body.error.code === "chat_rate_limited"
+        ? (parseRetryAfterSeconds(response.headers.get("retry-after")) ??
+          DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS)
+        : undefined;
+    throw new ChatApiError(
+      body.error.code,
+      retryAfterSeconds === undefined
+        ? body.error.message
+        : formatRateLimitMessage(retryAfterSeconds),
+      response.status,
+      retryAfterSeconds,
+    );
   }
 
   throw invalidStreamError(response.status);
@@ -228,7 +264,18 @@ export async function streamChatMessage(
 
     if (parsedEvent.event === "error") {
       if (isChatError(data)) {
-        throw new ChatApiError(data.error.code, data.error.message, response.status);
+        const retryAfterSeconds =
+          data.error.code === "chat_rate_limited"
+            ? DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS
+            : undefined;
+        throw new ChatApiError(
+          data.error.code,
+          retryAfterSeconds === undefined
+            ? data.error.message
+            : formatRateLimitMessage(retryAfterSeconds),
+          response.status,
+          retryAfterSeconds,
+        );
       }
       throw invalidStreamError(response.status);
     }

@@ -10,10 +10,10 @@ function createRequest(body: unknown) {
   });
 }
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -106,6 +106,7 @@ describe("POST /api/chat/stream", () => {
         jsonResponse(
           { error: { code: "chat_rate_limited", message: "请求过于频繁，请稍后重试。" } },
           429,
+          { "Retry-After": "15" },
         ),
       ),
     );
@@ -113,6 +114,7 @@ describe("POST /api/chat/stream", () => {
     const response = await POST(createRequest({ message: "你好" }));
 
     expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("15");
     expect(await response.json()).toEqual({
       error: { code: "chat_rate_limited", message: "请求过于频繁，请稍后重试。" },
     });

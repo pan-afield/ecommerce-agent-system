@@ -83,20 +83,64 @@ describe("BusinessToolsPanel", () => {
     );
   });
 
-  it("closes the narrow-screen drawer with Escape", async () => {
+  it("uses an overlay drawer that does not participate in workspace layout", () => {
+    render(<PanelHarness />);
+
+    const panel = screen.getByRole("dialog", { name: "业务工具" });
+    expect(panel).toHaveClass("absolute");
+    expect(panel).not.toHaveClass("xl:relative");
+    expect(panel).toHaveAttribute("aria-modal", "true");
+  });
+
+  it("closes the drawer with Escape at every viewport size", async () => {
     const user = userEvent.setup();
     render(<PanelHarness />);
 
     await user.keyboard("{Escape}");
 
-    expect(document.getElementById("business-tools-panel")).toHaveClass("hidden");
+    expect(document.getElementById("business-tools-panel")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(screen.queryByRole("dialog", { name: "业务工具" })).not.toBeInTheDocument();
+  });
+
+  it("moves focus into the drawer and returns it to the opener when closed", async () => {
+    function FocusHarness() {
+      const [isOpen, setIsOpen] = useState(false);
+
+      return (
+        <>
+          <button onClick={() => setIsOpen(true)} type="button">
+            打开工具
+          </button>
+          <BusinessToolsPanel
+            activeTool="order"
+            approvalDemoEnabled={false}
+            isOpen={isOpen}
+            onClose={() => setIsOpen(false)}
+            onSelectTool={() => undefined}
+          />
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<FocusHarness />);
+
+    const opener = screen.getByRole("button", { name: "打开工具" });
+    await user.click(opener);
+    expect(screen.getByRole("dialog", { name: "业务工具" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "关闭业务工具面板" }));
+    expect(opener).toHaveFocus();
   });
 
   it("exposes reduced-motion mode without removing tool content", () => {
     useReducedMotionMock.mockReturnValue(true);
     render(<PanelHarness />);
 
-    expect(document.getElementById("business-tools-panel")).toHaveAttribute(
+    expect(screen.getByRole("dialog", { name: "业务工具" })).toHaveAttribute(
       "data-motion-mode",
       "reduced",
     );

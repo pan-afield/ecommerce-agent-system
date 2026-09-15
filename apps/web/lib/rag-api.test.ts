@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RagApiError, searchKnowledge } from "./rag-api";
 
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body: unknown, status = 200, headers?: HeadersInit) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 }
 
@@ -47,6 +47,45 @@ describe("searchKnowledge", () => {
     });
     await expect(searchKnowledge("坏")).rejects.toMatchObject({
       code: "rag_invalid_response",
+    });
+  });
+
+  it("exposes the Retry-After cooldown for rate-limit responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+          429,
+          { "Retry-After": "9" },
+        ),
+      ),
+    );
+
+    await expect(searchKnowledge("退款")).rejects.toMatchObject({
+      code: "rag_rate_limited",
+      message: "请求过于频繁，请在 9 秒后重试。",
+      retryAfterSeconds: 9,
+      status: 429,
+    });
+  });
+
+  it("uses a conservative cooldown when Retry-After is missing or invalid", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          { error: { code: "rag_rate_limited", message: "请求过于频繁，请稍后重试。" } },
+          429,
+          { "Retry-After": "internal redis state" },
+        ),
+      ),
+    );
+
+    await expect(searchKnowledge("退款")).rejects.toMatchObject({
+      code: "rag_rate_limited",
+      message: "请求过于频繁，请在 60 秒后重试。",
+      retryAfterSeconds: 60,
     });
   });
 

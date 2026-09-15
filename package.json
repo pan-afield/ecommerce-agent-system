@@ -6,6 +6,8 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "db:up": "docker compose up -d postgres",
+    "redis:up": "docker compose up -d redis",
+    "redis:stop": "docker compose stop redis",
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:backend": "pnpm --filter @ecommerce-agent-system/agent-core test",

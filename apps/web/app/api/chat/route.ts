@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
 import { isBackendChatError, isChatResponse } from "@/lib/chat-contract";
+import { parseRetryAfterSeconds } from "@/lib/retry-after";
 import { getSessionAgentCoreAuthorization as createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   CHAT_CONTEXT_ID_MAX_LENGTH,
@@ -138,7 +139,16 @@ export async function POST(request: Request) {
   }
 
   if (!upstreamResponse.ok && isBackendChatError(upstreamBody)) {
-    return NextResponse.json(upstreamBody, { status: upstreamResponse.status });
+    const retryAfterSeconds =
+      upstreamBody.error.code === "chat_rate_limited"
+        ? parseRetryAfterSeconds(upstreamResponse.headers.get("retry-after"))
+        : undefined;
+    return NextResponse.json(upstreamBody, {
+      status: upstreamResponse.status,
+      ...(retryAfterSeconds === undefined
+        ? {}
+        : { headers: { "Retry-After": String(retryAfterSeconds) } }),
+    });
   }
 
   const backendDetail = getBackendDetail(upstreamBody);

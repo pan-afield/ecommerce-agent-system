@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, type KeyboardEvent } from "react";
 
-import { Button } from "@ecommerce-agent-system/ui";
+import { Button, motionTransitions } from "@ecommerce-agent-system/ui";
 import { BookOpen, PackageCheck, SlidersHorizontal, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
@@ -38,25 +38,36 @@ export function BusinessToolsPanel({
   const reduceMotion = useReducedMotion() ?? false;
   const orderTabRef = useRef<HTMLButtonElement>(null);
   const knowledgeTabRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  const panelRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const tabRefs = { knowledge: knowledgeTabRef, order: orderTabRef };
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) {
       return;
     }
 
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
     function handleEscape(event: globalThis.KeyboardEvent) {
-      if (
-        event.key === "Escape" &&
-        !window.matchMedia("(min-width: 1280px)").matches
-      ) {
-        onClose();
+      if (event.key === "Escape") {
+        onCloseRef.current();
       }
     }
 
+    panelRef.current?.focus();
     window.addEventListener("keydown", handleEscape);
-    return () => window.removeEventListener("keydown", handleEscape);
-  }, [isOpen, onClose]);
+    return () => {
+      window.removeEventListener("keydown", handleEscape);
+      returnFocusRef.current?.focus();
+    };
+  }, [isOpen]);
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
     if (![
@@ -82,20 +93,35 @@ export function BusinessToolsPanel({
           <motion.button
             animate={reduceMotion ? undefined : { opacity: 1 }}
             aria-label="关闭业务工具"
-            className="absolute inset-0 z-30 bg-ink/25 xl:hidden"
+            className="absolute inset-0 z-30 bg-ink/25"
             exit={reduceMotion ? undefined : { opacity: 0 }}
             initial={reduceMotion ? false : { opacity: 0 }}
             onClick={onClose}
+            transition={motionTransitions.feedback}
             type="button"
           />
         )}
       </AnimatePresence>
 
-      <aside
+      <motion.aside
+        animate={{
+          opacity: isOpen ? 1 : 0,
+          x: isOpen ? 0 : "100%",
+        }}
+        aria-hidden={!isOpen}
         aria-labelledby="business-tools-title"
-        className={`${isOpen ? "flex" : "hidden"} absolute inset-y-0 right-0 z-40 w-full min-w-0 flex-col border-l border-line bg-surface-raised shadow-shell sm:w-[28rem] xl:relative xl:z-auto xl:flex xl:w-[26rem] xl:shrink-0 xl:shadow-none`}
+        aria-modal={isOpen ? true : undefined}
+        className={`absolute inset-y-0 right-0 z-40 flex w-full min-w-0 max-w-full flex-col border-l border-line bg-surface-raised shadow-shell sm:w-[30rem] lg:w-[32rem] ${
+          isOpen ? "pointer-events-auto" : "pointer-events-none"
+        }`}
         data-motion-mode={reduceMotion ? "reduced" : "standard"}
         id="business-tools-panel"
+        inert={!isOpen}
+        initial={false}
+        ref={panelRef}
+        role="dialog"
+        tabIndex={-1}
+        transition={reduceMotion ? { duration: 0 } : motionTransitions.enter}
       >
         <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-4">
           <div className="min-w-0">
@@ -107,7 +133,7 @@ export function BusinessToolsPanel({
           </div>
           <Button
             aria-label="关闭业务工具面板"
-            className="size-9 px-0 xl:hidden"
+            className="size-9 px-0"
             onClick={onClose}
             title="关闭业务工具"
             variant="ghost"
@@ -170,7 +196,7 @@ export function BusinessToolsPanel({
             <KnowledgeSearch />
           </div>
         </div>
-      </aside>
+      </motion.aside>
     </>
   );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
 import { isBackendRagError, isRagSearchResponse } from "@/lib/rag-contract";
+import { parseRetryAfterSeconds } from "@/lib/retry-after";
 import { getSessionAgentCoreAuthorization as createAgentCoreAuthorization } from "@/lib/server-auth";
 import {
   RAG_LIMIT_MAX,
@@ -119,7 +120,16 @@ export async function GET(request: Request) {
   }
 
   if (!upstreamResponse.ok && isBackendRagError(body)) {
-    return NextResponse.json(body, { status: upstreamResponse.status });
+    const retryAfterSeconds =
+      body.error.code === "rag_rate_limited"
+        ? parseRetryAfterSeconds(upstreamResponse.headers.get("retry-after"))
+        : undefined;
+    return NextResponse.json(body, {
+      status: upstreamResponse.status,
+      ...(retryAfterSeconds === undefined
+        ? {}
+        : { headers: { "Retry-After": String(retryAfterSeconds) } }),
+    });
   }
 
   const backendDetail = getBackendDetail(body);
