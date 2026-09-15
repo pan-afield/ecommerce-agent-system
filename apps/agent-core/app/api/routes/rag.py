@@ -109,13 +109,15 @@ async def search_rag(
         )
 
         if not allowed:
-            response = _rag_error_response(
+            limited_response = _rag_error_response(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 code="rag_rate_limited",
                 message="请求过于频繁，请稍后重试。",
             )
-            response.headers["Retry-After"] = str(settings.rate_limit_window_seconds)
-            return response
+            limited_response.headers["Retry-After"] = str(
+                settings.rate_limit_window_seconds
+            )
+            return limited_response
 
     try:
         if redis_client is not None:
