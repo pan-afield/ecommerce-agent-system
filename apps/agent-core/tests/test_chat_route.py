@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, status
 from httpx import ASGITransport, AsyncClient, Response
 from langchain_core.messages import AIMessage, AnyMessage
 from langchain_core.tools import BaseTool
+from redis.exceptions import RedisError
 
 import app.api.routes.chat as chat_route_module
 from app.api.dependencies import get_chat_service
@@ -21,6 +22,7 @@ from app.services.chat import (
     ChatResult,
     ChatService,
 )
+from tests.test_rate_limit import FakeRateLimitRedis
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
 TEST_JWT_ISSUER = "ecommerce-agent-system"
@@ -106,9 +108,10 @@ async def test_chat_routes_return_429_when_user_rate_limit_is_exceeded(
     service.reply.assert_not_awaited()
 
 
+@pytest.mark.parametrize("path", ["/v1/chat", "/v1/chat/stream"])
 @pytest.mark.asyncio
 async def test_chat_route_continues_when_redis_rate_limit_check_fails(
-    monkeypatch: pytest.MonkeyPatch,
+    path: str,
 ) -> None:
     service = AsyncMock(spec=ChatService)
     service.reply.return_value = ChatResult(
@@ -117,21 +120,21 @@ async def test_chat_route_continues_when_redis_rate_limit_check_fails(
         citations=[],
     )
     app = create_test_app(service)
-    app.state.redis_client = object()
+    redis = FakeRateLimitRedis(error=RedisError("private redis connection details"))
+    app.state.redis_client = redis
 
-    async def allow_request(*args: object, **kwargs: object) -> bool:
-        return True
-
-    monkeypatch.setattr(chat_route_module, "consume_rate_limit", allow_request)
-
-    response = await post_chat(
-        app,
-        "你好",
-        headers=make_auth_headers("customer-001"),
-    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            path,
+            json={"message": "你好"},
+            headers=make_auth_headers("customer-001"),
+        )
 
     assert response.status_code == 200
     service.reply.assert_awaited_once()
+    assert redis.pipeline_calls == 1
+    assert "private redis connection details" not in response.text
 
 
 def test_chat_routes_document_rag_validation_error() -> None:

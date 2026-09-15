@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Awaitable, Callable
 from typing import cast
 
 import pytest
@@ -27,6 +26,8 @@ class FakeRateLimitPipeline:
         self._operations.append(("expire", key, seconds, nx))
 
     async def execute(self) -> list[int | bool]:
+        # 模拟网络等待，让并发调用先重叠，再由 Fake 的锁模拟 Redis 顺序执行。
+        await asyncio.sleep(0)
         if self._redis.error is not None:
             raise self._redis.error
 
@@ -56,10 +57,29 @@ class FakeRateLimitRedis:
         self.now = 0.0
         self.error = error
         self.lock = asyncio.Lock()
+        self.pipeline_calls = 0
+        self.cached_values: dict[str, str] = {}
+        self.cache_operations: list[tuple[str, str]] = []
 
     def pipeline(self, *, transaction: bool) -> FakeRateLimitPipeline:
         assert transaction is True
+        self.pipeline_calls += 1
         return FakeRateLimitPipeline(self)
+
+    async def get(self, key: str) -> str | None:
+        self.cache_operations.append(("get", key))
+        if self.error is not None:
+            raise self.error
+        return self.cached_values.get(key)
+
+    async def set(self, key: str, value: str, *, ex: int) -> bool:
+        self.cache_operations.append(("set", key))
+        if self.error is not None:
+            raise self.error
+        assert ex > 0
+        # 仅模拟路由所需的缓存读写；限流计数的时间由 advance() 控制。
+        self.cached_values[key] = value
+        return True
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
@@ -114,6 +134,20 @@ async def test_consume_rate_limit_allows_again_after_window_expires() -> None:
 
 
 @pytest.mark.asyncio
+async def test_later_and_rejected_requests_do_not_extend_rate_limit_window() -> None:
+    redis = FakeRateLimitRedis()
+    assert await allow_request(redis, "rate:user-a") is True
+    redis.advance(4)
+    assert await allow_request(redis, "rate:user-a") is True
+    redis.advance(5.5)
+    assert await allow_request(redis, "rate:user-a") is False
+    assert redis.expiry_at["rate:user-a"] == 10
+    redis.advance(0.5)
+    assert await allow_request(redis, "rate:user-a") is True
+    assert redis.values["rate:user-a"] == 1
+
+
+@pytest.mark.asyncio
 async def test_consume_rate_limit_isolates_different_users() -> None:
     redis = FakeRateLimitRedis()
 
@@ -133,11 +167,9 @@ async def test_consume_rate_limit_fails_open_when_redis_is_unavailable() -> None
 @pytest.mark.asyncio
 async def test_consume_rate_limit_keeps_concurrent_requests_within_limit() -> None:
     redis = FakeRateLimitRedis()
-    calls: list[Callable[[], Awaitable[bool]]] = [
-        lambda: allow_request(redis, "rate:user-a") for _ in range(5)
-    ]
-
-    results = await asyncio.gather(*(call() for call in calls))
+    results = await asyncio.gather(
+        *(allow_request(redis, "rate:user-a") for _ in range(5))
+    )
 
     assert results.count(True) == 2
     assert results.count(False) == 3
@@ -152,10 +184,12 @@ async def test_consume_rate_limit_rejects_invalid_limits(
     limit: int,
     window_seconds: int,
 ) -> None:
+    redis = FakeRateLimitRedis()
     with pytest.raises(ValueError):
         await allow_request(
-            FakeRateLimitRedis(),
+            redis,
             "rate:user-a",
             limit=limit,
             window_seconds=window_seconds,
         )
+    assert redis.pipeline_calls == 0

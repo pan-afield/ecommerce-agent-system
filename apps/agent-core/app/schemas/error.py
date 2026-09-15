@@ -13,6 +13,7 @@ ApiErrorCode = Literal[
     "rag_embedding_unavailable",
     "rag_database_incompatible",
     "rag_forbidden",
+    "rag_rate_limited",
 ]
 
 

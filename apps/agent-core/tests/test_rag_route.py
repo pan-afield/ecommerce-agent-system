@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 from langchain_core.embeddings import Embeddings
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import app.api.routes.rag as rag_route_module
@@ -18,6 +19,7 @@ from app.rag.local_embeddings import RagEmbeddingError
 from app.rag.service import RagContext
 from app.rag.vector_store import RagVectorDimensionError
 from tests.conftest import FakeRoleEngine
+from tests.test_rate_limit import FakeRateLimitRedis
 
 
 class UnusedEmbeddings(Embeddings):
@@ -113,6 +115,10 @@ async def test_rag_search_returns_429_when_user_rate_limit_is_exceeded(
         return False
 
     monkeypatch.setattr(rag_route_module, "consume_rate_limit", reject_request)
+    build_context = AsyncMock(side_effect=AssertionError("limited request must not retrieve"))
+    read_cache = AsyncMock(side_effect=AssertionError("limited request must not read cache"))
+    monkeypatch.setattr(rag_route_module, "build_rag_context", build_context)
+    monkeypatch.setattr(rag_route_module, "get_cache_value", read_cache)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -130,6 +136,8 @@ async def test_rag_search_returns_429_when_user_rate_limit_is_exceeded(
             "message": "请求过于频繁，请稍后重试。",
         }
     }
+    build_context.assert_not_awaited()
+    read_cache.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -137,18 +145,15 @@ async def test_rag_search_continues_when_redis_rate_limit_check_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_rag_test_app()
-    app.state.redis_client = object()
+    redis = FakeRateLimitRedis(error=RedisError("private redis connection details"))
+    app.state.redis_client = redis
     service_called = False
-
-    async def allow_request(*args: object, **kwargs: object) -> bool:
-        return True
 
     async def fake_build_context(*args: object, **kwargs: object) -> RagContext:
         nonlocal service_called
         service_called = True
         return RagContext(query="退款政策", citations=[])
 
-    monkeypatch.setattr(rag_route_module, "consume_rate_limit", allow_request)
     monkeypatch.setattr(rag_route_module, "build_rag_context", fake_build_context)
 
     transport = ASGITransport(app=app)
@@ -162,6 +167,9 @@ async def test_rag_search_continues_when_redis_rate_limit_check_fails(
     assert response.status_code == 200
     assert response.json() == {"query": "退款政策", "citations": []}
     assert service_called is True
+    assert redis.pipeline_calls == 1
+    assert [operation for operation, _ in redis.cache_operations] == ["get", "set"]
+    assert "private redis connection details" not in response.text
 
 
 @pytest.mark.asyncio
@@ -406,7 +414,7 @@ async def test_rag_search_returns_valid_cache_without_calling_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_rag_test_app()
-    fake_redis = MagicMock()
+    fake_redis = FakeRateLimitRedis()
     app.state.redis_client = fake_redis
     cached_value = {
         "query": "退款政策",
@@ -449,7 +457,7 @@ async def test_rag_search_falls_back_when_cached_value_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_rag_test_app()
-    app.state.redis_client = MagicMock()
+    app.state.redis_client = FakeRateLimitRedis()
     monkeypatch.setattr(
         rag_route_module,
         "get_cache_value",
@@ -487,7 +495,7 @@ async def test_rag_search_writes_database_result_to_cache_on_miss(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_rag_test_app()
-    fake_redis = MagicMock()
+    fake_redis = FakeRateLimitRedis()
     app.state.redis_client = fake_redis
     citation = KnowledgeCitation(
         source_id="refund-policy-v1",
@@ -542,7 +550,7 @@ async def test_rag_search_returns_result_when_cache_write_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_rag_test_app()
-    app.state.redis_client = MagicMock()
+    app.state.redis_client = FakeRateLimitRedis()
     monkeypatch.setattr(
         rag_route_module,
         "get_cache_value",

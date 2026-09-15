@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from app.api.dependencies import get_current_user_role
+from app.api.dependencies import get_current_user_id, get_current_user_role
 from app.api.serializers import format_citations
 from app.core.redis import (
     build_rag_cache_key,
+    consume_rate_limit,
     get_cache_value,
     set_cache_value,
 )
@@ -33,6 +34,7 @@ def _rag_error_response(
         "rag_embedding_unavailable",
         "rag_database_incompatible",
         "rag_forbidden",
+        "rag_rate_limited",
     ],
     message: str,
 ) -> JSONResponse:
@@ -51,11 +53,13 @@ def _rag_error_response(
     responses={
         status.HTTP_403_FORBIDDEN: {"model": ErrorResponse},
         status.HTTP_422_UNPROCESSABLE_ENTITY: {"model": ErrorResponse},
+        status.HTTP_429_TOO_MANY_REQUESTS: {"model": ErrorResponse},
         status.HTTP_503_SERVICE_UNAVAILABLE: {"model": ErrorResponse},
     },
 )
 async def search_rag(
     request: Request,
+    current_user_id: Annotated[str, Depends(get_current_user_id)],
     query: Annotated[
         str,
         Query(min_length=1, max_length=500),
@@ -95,6 +99,23 @@ async def search_rag(
             code="rag_not_configured",
             message="知识库检索服务尚未配置。",
         )
+
+    if redis_client is not None:
+        allowed = await consume_rate_limit(
+            redis_client,
+            f"rate:v1:rag:user:{current_user_id}",
+            limit=settings.rate_limit_requests,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+
+        if not allowed:
+            response = _rag_error_response(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                code="rag_rate_limited",
+                message="请求过于频繁，请稍后重试。",
+            )
+            response.headers["Retry-After"] = str(settings.rate_limit_window_seconds)
+            return response
 
     try:
         if redis_client is not None:

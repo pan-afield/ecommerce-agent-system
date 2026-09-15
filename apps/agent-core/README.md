@@ -79,3 +79,42 @@ the previously imported visibility scopes. Sign in with the role accounts docume
 the public citation; support should receive public and support citations; admin should receive all
 three. The API decides visibility from the database role, so clients must not send or invent a
 visibility value.
+
+## V0.9 per-user rate limiting (in progress)
+
+The first V0.9 slice adds a fixed window counter to the authenticated chat and RAG routes.
+Configure these values in the repository root `.env` or `apps/agent-core/.env`:
+
+```dotenv
+REDIS_URL=redis://localhost:6379/0
+RATE_LIMIT_REQUESTS=30
+RATE_LIMIT_WINDOW_SECONDS=60
+```
+
+The Redis URL must point to an environment you manage; this example does not start Redis.
+Use Redis 7+ for `EXPIRE NX`. Leaving `REDIS_URL` blank disables caching and rate limiting.
+
+| Routes | Redis counter key | Local limit error |
+| --- | --- | --- |
+| `POST /v1/chat`, `POST /v1/chat/stream` | `rate:v1:chat:user:{JWT sub}` | `chat_rate_limited` |
+| `GET /v1/rag/search` | `rate:v1:rag:user:{JWT sub}` | `rag_rate_limited` |
+
+The default is 30 allowed requests per user per bucket within a window starting at the first
+request. Later requests, including rejected attempts, do not extend the TTL. RAG cache hits also
+consume quota; the RAG `limit` query parameter still controls citation count only. Identity comes
+from a verified JWT, and existing database role checks continue to restrict RAG visibility.
+
+Excess requests receive JSON `429` with `Retry-After` set conservatively to the full window length.
+For SSE this happens before the stream starts. Redis errors fail open: the service remains
+available, but the quota cannot be guaranteed. This counter does not replace PostgreSQL business
+state or checkpoint idempotency. Replaying a `request_id` consumes an HTTP attempt while the
+existing checkpoint can still reuse the completed answer.
+
+See [V0.9 learning notes](../../docs/learning/v0.9-backend.md) for the request flow, verification
+results, and remaining manual checks. Automated checks use Fake Redis and mocked services:
+
+```bash
+.venv/bin/python -m pytest tests/test_rate_limit.py tests/test_rate_limit_routes.py \
+  tests/test_chat_route.py tests/test_rag_route.py tests/test_config.py tests/test_redis.py \
+  tests/test_chat_service.py tests/test_support_graph.py -o addopts='' -q
+```
