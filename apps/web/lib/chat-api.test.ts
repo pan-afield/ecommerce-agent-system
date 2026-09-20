@@ -55,6 +55,26 @@ describe("sendChatMessage", () => {
     );
   });
 
+  it("refreshes an expired session before returning a normal chat response", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "chat_unauthorized", message: "登录状态无效。" } }, 401))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({ assistant: { content: "刷新后成功" }, model: "test-model" }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sendChatMessage({ message: "你好" })).resolves.toMatchObject({
+      assistant: { content: "刷新后成功" },
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/chat",
+      "/api/auth/refresh",
+      "/api/chat",
+    ]);
+  });
+
   it("throws the stable error returned by the BFF", async () => {
     vi.stubGlobal(
       "fetch",
@@ -225,6 +245,65 @@ describe("streamChatMessage", () => {
     });
   });
 
+  it("refreshes once before opening the retried SSE response", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "chat_unauthorized", message: "登录状态无效，请重新登录。" } },
+          401,
+        ),
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(
+        sseResponse([
+          "event: assistant\ndata: {\"content\":\"刷新后流式成功\",\"model\":\"m\"}\n\n",
+          "event: done\ndata: {}\n\n",
+        ]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(streamChatMessage({ message: "你好" })).resolves.toMatchObject({
+      assistant: { content: "刷新后流式成功" },
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/chat/stream",
+      "/api/auth/refresh",
+      "/api/chat/stream",
+    ]);
+  });
+
+  it("does not refresh again when the retried SSE request is unauthorized", async () => {
+    const unauthorized = jsonResponse(
+      { error: { code: "chat_unauthorized", message: "登录状态无效，请重新登录。" } },
+      401,
+    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(unauthorized)
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "chat_unauthorized", message: "登录状态无效，请重新登录。" } },
+          401,
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(streamChatMessage({ message: "认证" })).rejects.toMatchObject({
+      code: "chat_unauthorized",
+      status: 401,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/chat/stream",
+      "/api/auth/refresh",
+      "/api/chat/stream",
+      "/api/auth/logout",
+    ]);
+  });
+
   it("rejects conflicting duplicate, malformed, and incomplete streams", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
@@ -261,6 +340,7 @@ describe("streamChatMessage", () => {
           401,
         ),
       )
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "auth_refresh_invalid" } }, 401))
       .mockResolvedValueOnce(
         sseResponse([
           "event: error\ndata: {\"error\":{\"code\":\"chat_timeout\",\"message\":\"响应超时。\"}}\n\n",

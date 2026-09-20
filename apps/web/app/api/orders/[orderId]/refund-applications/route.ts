@@ -40,7 +40,6 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    auth: "customer",
     body: {
       request_id: body.request_id.trim(),
       requested_amount: body.requested_amount,

@@ -19,6 +19,7 @@ import {
   PackageCheck,
   RotateCcw,
   Send,
+  ShieldAlert,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -30,6 +31,7 @@ import {
 import { OrderDetailCard } from "@/components/order-detail-card";
 import { KnowledgeEvidence } from "@/components/knowledge-evidence";
 import { ChatApiError, streamChatMessage } from "@/lib/chat-api";
+import type { AuthUser } from "@/lib/auth-client";
 import {
   clearChatSession,
   createChatIdentifier,
@@ -193,9 +195,10 @@ function ChatMessageItem({
 
 interface ChatWorkspaceProps {
   approvalDemoEnabled?: boolean;
+  userRole?: AuthUser["role"];
 }
 
-export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProps) {
+export function ChatWorkspace({ approvalDemoEnabled = false, userRole = "CUSTOMER" }: ChatWorkspaceProps) {
   const [messages, setMessages] = useState<LocalChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
@@ -401,7 +404,13 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
   function openTool(tool: BusinessTool) {
     setActiveTool(tool);
     setToolsOpen(true);
-    setToolAnnouncement(tool === "order" ? "已打开订单查询。" : "已打开知识库检索。");
+    setToolAnnouncement(
+      tool === "order"
+        ? "已打开订单查询。"
+        : tool === "knowledge"
+          ? "已打开知识库检索。"
+          : "已打开退款运维。",
+    );
   }
 
   function closeTools() {
@@ -427,7 +436,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
       >
       <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-5 sm:px-8">
         <div>
-          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V0.6</p>
+          <p className="font-mono text-[10px] uppercase text-ink-muted">Workspace / V1.0</p>
           <h1 id="workspace-title" className="text-base font-bold text-ink">
             客服工作台
           </h1>
@@ -475,6 +484,19 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
           >
             <BookOpen className="size-4" aria-hidden="true" />
           </Button>
+          {userRole === "ADMIN" && (
+            <Button
+              aria-controls="business-tools-panel"
+              aria-expanded={toolsOpen && activeTool === "refund-operations"}
+              aria-label={toolsOpen && activeTool === "refund-operations" ? "关闭退款运维" : "打开退款运维"}
+              className="size-9 px-0"
+              onClick={() => toggleTool("refund-operations")}
+              title="退款运维"
+              variant={toolsOpen && activeTool === "refund-operations" ? "secondary" : "ghost"}
+            >
+              <ShieldAlert className="size-4" aria-hidden="true" />
+            </Button>
+          )}
           <span className="mx-0.5 hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
           <Button
             aria-label="开始新会话"
@@ -607,6 +629,7 @@ export function ChatWorkspace({ approvalDemoEnabled = false }: ChatWorkspaceProp
         isOpen={toolsOpen}
         onClose={closeTools}
         onSelectTool={openTool}
+        userRole={userRole}
       />
     </div>
   );

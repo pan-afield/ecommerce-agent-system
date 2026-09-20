@@ -1,4 +1,5 @@
 import { isOrderDetail, isOrderError } from "@/lib/order-contract";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import type { OrderDetail, OrderErrorCode } from "@/types/order";
 
 export class OrderApiError extends Error {
@@ -21,7 +22,7 @@ export async function getOrder(orderId: string): Promise<OrderDetail> {
 
   let response: Response;
   try {
-    response = await fetch(`/api/orders/${encodeURIComponent(normalizedOrderId)}`, {
+    response = await authenticatedFetch(`/api/orders/${encodeURIComponent(normalizedOrderId)}`, {
       method: "GET",
       cache: "no-store",
     });

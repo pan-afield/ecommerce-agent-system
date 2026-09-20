@@ -1,9 +1,12 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.core.config import Settings
 from app.main import create_app
 from app.rag.citations import KnowledgeCitation
 from app.rag.service import RagContext
+from app.services.refund_sandbox import InMemoryRefundSandbox
 
 
 async def test_lifespan_owns_postgres_checkpointer_for_chat_service() -> None:
@@ -120,6 +123,192 @@ async def test_lifespan_initializes_rag_without_openai_chat_configuration() -> N
             assert application.state.chat_service is None
 
     embeddings_builder.assert_called_once_with(settings)
+
+
+async def test_lifespan_reuses_refund_sandbox_per_app_without_sharing_between_apps() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=None),
+        patch("app.main.create_local_embeddings", return_value=None),
+    ):
+        first_app = create_app(settings)
+        second_app = create_app(settings)
+
+        async with first_app.router.lifespan_context(first_app):
+            first_adapter = first_app.state.refund_sandbox_adapter
+            assert isinstance(first_adapter, InMemoryRefundSandbox)
+            assert first_app.state.refund_sandbox_adapter is first_adapter
+            async with second_app.router.lifespan_context(second_app):
+                assert isinstance(second_app.state.refund_sandbox_adapter, InMemoryRefundSandbox)
+                assert second_app.state.refund_sandbox_adapter is not first_adapter
+
+    assert fake_engine.dispose.await_count == 2
+
+
+async def test_lifespan_creates_and_closes_http_refund_sandbox_client() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql://postgres:postgres@localhost:5432/ecommerce_agents_test",
+        refund_sandbox_base_url="https://sandbox.example.test/api",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    fake_adapter = MagicMock()
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=None),
+        patch("app.main.create_local_embeddings", return_value=None),
+        patch("app.main.httpx.AsyncClient", return_value=fake_http_client) as client_factory,
+        patch("app.main.HttpRefundSandbox", return_value=fake_adapter) as adapter_factory,
+    ):
+        application = create_app(settings)
+
+        async with application.router.lifespan_context(application):
+            assert application.state.refund_sandbox_adapter is fake_adapter
+
+    client_factory.assert_called_once_with(
+        base_url="https://sandbox.example.test/api",
+        timeout=10.0,
+        headers={},
+    )
+    adapter_factory.assert_called_once_with(fake_http_client)
+    fake_http_client.aclose.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure_stage", ["client", "adapter"])
+async def test_lifespan_releases_acquired_resources_when_refund_startup_fails(
+    failure_stage: str,
+) -> None:
+    settings = Settings(
+        environment="test",
+        refund_sandbox_base_url="https://sandbox.example.test",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    failure = RuntimeError("simulated refund initialization failure")
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=fake_redis),
+        patch("app.main.create_local_embeddings") as embeddings_factory,
+        patch("app.main.httpx.AsyncClient", return_value=fake_http_client) as client_factory,
+        patch("app.main.HttpRefundSandbox") as adapter_factory,
+    ):
+        if failure_stage == "client":
+            client_factory.side_effect = failure
+        else:
+            adapter_factory.side_effect = failure
+        application = create_app(settings)
+
+        with pytest.raises(RuntimeError) as caught:
+            async with application.router.lifespan_context(application):
+                pytest.fail("Application must not accept requests after startup failure")
+
+    assert caught.value is failure
+    client_factory.assert_called_once()
+    embeddings_factory.assert_not_called()
+    if failure_stage == "client":
+        adapter_factory.assert_not_called()
+        fake_http_client.aclose.assert_not_awaited()
+    else:
+        adapter_factory.assert_called_once_with(fake_http_client)
+        fake_http_client.aclose.assert_awaited_once()
+    fake_redis.aclose.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure_stage", ["http", "redis"])
+async def test_lifespan_attempts_remaining_cleanup_after_close_failure(
+    failure_stage: str,
+) -> None:
+    settings = Settings(
+        environment="test",
+        refund_sandbox_base_url="https://sandbox.example.test",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock()
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock()
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock()
+    failure = RuntimeError("simulated resource cleanup failure")
+    if failure_stage == "http":
+        fake_http_client.aclose.side_effect = failure
+    else:
+        fake_redis.aclose.side_effect = failure
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=fake_redis),
+        patch("app.main.create_local_embeddings", return_value=None),
+        patch("app.main.httpx.AsyncClient", return_value=fake_http_client),
+        patch("app.main.HttpRefundSandbox"),
+    ):
+        application = create_app(settings)
+        with pytest.raises(RuntimeError) as caught:
+            async with application.router.lifespan_context(application):
+                fake_http_client.aclose.assert_not_awaited()
+                fake_redis.aclose.assert_not_awaited()
+                fake_engine.dispose.assert_not_awaited()
+
+    assert caught.value is failure
+    fake_http_client.aclose.assert_awaited_once()
+    fake_redis.aclose.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()
+
+
+async def test_lifespan_exposes_last_cleanup_failure_after_attempting_all_resources() -> None:
+    settings = Settings(
+        environment="test",
+        refund_sandbox_base_url="https://sandbox.example.test",
+        openai_api_key=None,
+        _env_file=None,
+    )
+    fake_engine = MagicMock()
+    fake_engine.dispose = AsyncMock(side_effect=RuntimeError("engine cleanup failed"))
+    fake_redis = MagicMock()
+    fake_redis.aclose = AsyncMock(side_effect=RuntimeError("redis cleanup failed"))
+    fake_http_client = MagicMock()
+    fake_http_client.aclose = AsyncMock(side_effect=RuntimeError("http cleanup failed"))
+
+    with (
+        patch("app.main.create_database_engine", return_value=fake_engine),
+        patch("app.main.create_redis_client", return_value=fake_redis),
+        patch("app.main.create_local_embeddings", return_value=None),
+        patch("app.main.httpx.AsyncClient", return_value=fake_http_client),
+        patch("app.main.HttpRefundSandbox"),
+    ):
+        application = create_app(settings)
+        with pytest.raises(RuntimeError, match="engine cleanup failed"):
+            async with application.router.lifespan_context(application):
+                pytest.fail("Application should exit through lifespan cleanup")
+
+    fake_http_client.aclose.assert_awaited_once()
+    fake_redis.aclose.assert_awaited_once()
+    fake_engine.dispose.assert_awaited_once()
 
 
 async def test_lifespan_keeps_app_available_when_local_rag_initialization_fails() -> None:

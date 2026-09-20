@@ -21,6 +21,7 @@ export const REFUND_ERROR_CODES = [
   "refund_invalid_request",
   "refund_unauthorized",
   "refund_forbidden",
+  "refund_rate_limited",
   "refund_not_found",
   "refund_conflict",
   "refund_ineligible",
@@ -30,14 +31,33 @@ export const REFUND_ERROR_CODES = [
   "refund_upstream_unreachable",
   "refund_upstream_timeout",
   "refund_invalid_upstream_response",
+  "refund_outcome_unknown",
   "refund_network_error",
   "refund_invalid_response",
+] as const;
+
+export const REFUND_EXECUTION_STATUSES = [
+  "PENDING",
+  "RUNNING",
+  "PROCESSING",
+  "SUCCEEDED",
+  "FAILED",
+] as const;
+
+export const REFUND_RECOVERY_STATUSES = [
+  "READY",
+  "LEASED",
+  "COMPLETED",
+  "MANUAL_REQUIRED",
 ] as const;
 
 export type RefundStatus = (typeof REFUND_STATUSES)[number];
 export type RefundReasonCode = (typeof REFUND_REASON_CODES)[number];
 export type RefundErrorCode = (typeof REFUND_ERROR_CODES)[number];
 export type RefundReviewDecision = "APPROVED" | "REJECTED";
+export type RefundExecutionStatus = (typeof REFUND_EXECUTION_STATUSES)[number];
+export type RefundRecoveryStatus = (typeof REFUND_RECOVERY_STATUSES)[number];
+export type RefundOperationAction = "resume" | "resubmit" | "acknowledge-conflict";
 
 export interface RefundAssessment {
   eligible_for_review: boolean;
@@ -63,4 +83,54 @@ export interface RefundError {
     code: RefundErrorCode;
     message: string;
   };
+}
+
+export interface RefundExecution {
+  id: string;
+  provider_reference: string | null;
+  status: RefundExecutionStatus;
+  amount: string;
+  currency: string;
+}
+
+export interface RefundOperationQueueItem {
+  refund_application_id: string;
+  execution_status: RefundExecutionStatus;
+  status: RefundRecoveryStatus;
+  attempts: number;
+  last_error_code: string | null;
+  updated_at: string;
+}
+
+export interface RefundOperationQueue {
+  items: RefundOperationQueueItem[];
+}
+
+export interface RefundRecoverySnapshot {
+  status: RefundRecoveryStatus;
+  attempts: number;
+  next_attempt_at: string;
+  last_error_code: string | null;
+  updated_at: string;
+}
+
+export interface RefundAuditEvent {
+  id: string;
+  action: string;
+  source: string;
+  actor_user_id: string | null;
+  source_event_id: string | null;
+  from_status: string | null;
+  to_status: string | null;
+  provider_reference: string | null;
+  error_code: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+export interface RefundOperationDetail {
+  execution: RefundExecution;
+  recovery: RefundRecoverySnapshot | null;
+  events: RefundAuditEvent[];
+  next_after_id: string;
 }

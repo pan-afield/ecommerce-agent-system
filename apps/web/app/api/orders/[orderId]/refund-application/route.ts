@@ -13,7 +13,6 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    auth: "customer",
     isSuccessBody: isRefundApplication,
     method: "GET",
     path: `/v1/orders/${encodeURIComponent(orderId)}/refund-application`,

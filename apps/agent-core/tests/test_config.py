@@ -96,6 +96,81 @@ def test_settings_allow_openai_to_be_unconfigured() -> None:
     assert settings.openai_request_timeout_seconds == 30.0
 
 
+def test_settings_allow_refund_sandbox_to_be_unconfigured() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_sandbox_base_url is None
+    assert settings.refund_sandbox_request_timeout_seconds == 10.0
+    assert settings.refund_sandbox_webhook_secret is None
+
+
+def test_settings_load_refund_sandbox_webhook_secret_without_exposing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_WEBHOOK_SECRET", "sandbox-webhook-secret")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_sandbox_webhook_secret is not None
+    assert (
+        settings.refund_sandbox_webhook_secret.get_secret_value()
+        == "sandbox-webhook-secret"
+    )
+    assert str(settings.refund_sandbox_webhook_secret) == "**********"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n\t"])
+def test_settings_treat_blank_refund_sandbox_webhook_secret_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_WEBHOOK_SECRET", value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_sandbox_webhook_secret is None
+
+
+def test_settings_load_refund_sandbox_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_BASE_URL", "https://sandbox.example.test/api")
+
+    settings = Settings(_env_file=None)
+
+    assert str(settings.refund_sandbox_base_url) == "https://sandbox.example.test/api"
+
+
+def test_settings_load_refund_sandbox_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_REQUEST_TIMEOUT_SECONDS", "45")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.refund_sandbox_request_timeout_seconds == 45.0
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "120.1"])
+def test_settings_reject_invalid_refund_sandbox_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_REQUEST_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("value", ["sandbox.example.test", "not a url"])
+def test_settings_reject_invalid_refund_sandbox_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("REFUND_SANDBOX_BASE_URL", value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_settings_use_ecommerce_agent_issuer_by_default() -> None:
     settings = Settings(_env_file=None)
 

@@ -12,7 +12,6 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    auth: "customer",
     isSuccessBody: isRefundApplication,
     method: "POST",
     path: `/v1/refund-applications/${encodeURIComponent(applicationId)}/confirm`,

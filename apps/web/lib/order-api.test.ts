@@ -37,6 +37,22 @@ describe("getOrder", () => {
     });
   });
 
+  it("refreshes an expired session before returning the order", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "order_unauthorized", message: "登录状态无效。" } }, 401))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse(orderFixture));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getOrder("order-demo-001")).resolves.toEqual(orderFixture);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/orders/order-demo-001",
+      "/api/auth/refresh",
+      "/api/orders/order-demo-001",
+    ]);
+  });
+
   it("throws the stable error returned by the BFF", async () => {
     vi.stubGlobal(
       "fetch",

@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal, cast
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
@@ -12,6 +13,9 @@ from app.api.dependencies import get_current_refund_approver_id, get_current_use
 from app.services.refund import (
     confirm_refund_application,
     fetch_refund_application_by_id,
+    fetch_refund_execution,
+    recover_refund_sandbox,
+    run_refund_sandbox,
     try_review_refund_application,
 )
 
@@ -49,15 +53,8 @@ async def confirm_refund(
             application_id=application_id,
             user_id=current_user_id,
         )
-    except SQLAlchemyError as error:
-        logger.warning(
-            "Refund confirmation database operation failed: error_type=%s",
-            type(error).__name__,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="退款服务暂时不可用，请稍后重试。",
-        ) from error
+    except (SQLAlchemyError, OSError) as error:
+        raise _refund_http_error(error, operation="confirmation") from error
 
     if application is None:
         raise HTTPException(
@@ -152,15 +149,8 @@ async def review_refund(
                 engine,
                 application_id=application_id,
             )
-    except SQLAlchemyError as error:
-        logger.warning(
-            "Refund review database operation failed: error_type=%s",
-            type(error).__name__,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="退款服务暂时不可用，请稍后重试。",
-        ) from error
+    except (SQLAlchemyError, OSError) as error:
+        raise _refund_http_error(error, operation="review") from error
 
     if application is None:
         raise HTTPException(
@@ -178,4 +168,138 @@ async def review_refund(
         reviewed_by_user_id=application.reviewed_by_user_id,
         reviewed_at=application.reviewed_at,
         review_note=application.review_note,
+    )
+
+
+class RefundExecutionResponse(BaseModel):
+    id: str
+    provider_reference: str | None
+    status: str
+    amount: Decimal
+    currency: str
+
+
+@router.get("/{application_id}/execution", response_model=RefundExecutionResponse)
+async def refund_execution(
+    application_id: str,
+    user_id: Annotated[
+        str,
+        Depends(get_current_user_id),
+    ],
+    request: Request,
+) -> RefundExecutionResponse:
+    engine = cast(AsyncEngine, request.app.state.database_engine)
+    try:
+        record = await fetch_refund_execution(
+            engine=engine, user_id=user_id, refund_application_id=application_id
+        )
+    except (SQLAlchemyError, OSError) as error:
+        raise _refund_http_error(error, operation="status") from error
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="无记录",
+        )
+    return RefundExecutionResponse(
+        id=record.id,
+        status=record.status,
+        amount=record.amount,
+        currency=record.currency,
+        provider_reference=record.provider_reference,
+    )
+
+
+@router.post("/{application_id}/execute", response_model=RefundExecutionResponse)
+async def start_refund_execute(
+    request: Request, user_id: Annotated[str, Depends(get_current_user_id)], application_id: str
+) -> RefundExecutionResponse:
+    engine = request.app.state.database_engine
+    refund_sandbox_adapter = request.app.state.refund_sandbox_adapter
+    execution_id = str(uuid4())
+    try:
+        result = await run_refund_sandbox(
+            engine=engine,
+            user_id=user_id,
+            execution_id=execution_id,
+            adapter=refund_sandbox_adapter,
+            refund_application_id=application_id,
+        )
+    except (SQLAlchemyError, OSError, RuntimeError) as error:
+        raise _refund_http_error(error, operation="execution") from error
+
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="退款申请不存在。",
+        )
+
+    return RefundExecutionResponse(
+        id=result.id,
+        amount=result.amount,
+        status=result.status,
+        currency=result.currency,
+        provider_reference=result.provider_reference,
+    )
+
+
+@router.post("/{application_id}/recover", response_model=RefundExecutionResponse)
+async def recover_refund(
+    request: Request, user_id: Annotated[str, Depends(get_current_user_id)], application_id: str
+) -> RefundExecutionResponse:
+    engine = request.app.state.database_engine
+    refund_sandbox_adapter = request.app.state.refund_sandbox_adapter
+    try:
+        result = await recover_refund_sandbox(
+            engine=engine,
+            user_id=user_id,
+            refund_application_id=application_id,
+            adapter=refund_sandbox_adapter,
+        )
+
+    except (SQLAlchemyError, OSError, RuntimeError) as error:
+        raise _refund_http_error(error, operation="recovery") from error
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="退款申请不存在。",
+        )
+
+    return RefundExecutionResponse(
+        id=result.id,
+        provider_reference=result.provider_reference,
+        status=result.status,
+        amount=result.amount,
+        currency=result.currency,
+    )
+
+
+def _refund_http_error(
+    error: SQLAlchemyError | OSError | RuntimeError,
+    *,
+    operation: str,
+) -> HTTPException:
+    logger.warning(
+        "Refund %s failed: error_type=%s",
+        operation,
+        type(error).__name__,
+    )
+
+    if isinstance(error, SQLAlchemyError) or (
+        isinstance(error, OSError) and not isinstance(error, TimeoutError)
+    ):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="退款服务暂时不可用，请稍后重试。",
+        )
+
+    if isinstance(error, TimeoutError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="退款结果暂时未知，请稍后查询。",
+        )
+
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail="退款服务响应无效，请稍后重试。",
     )

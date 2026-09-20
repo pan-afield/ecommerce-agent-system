@@ -33,6 +33,25 @@ describe("searchKnowledge", () => {
     );
   });
 
+  it("refreshes an expired session before returning a RAG result", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "rag_unauthorized", message: "登录状态无效。" } }, 401))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }))
+      .mockResolvedValueOnce(jsonResponse({ query: "配送时效", citations: [citation] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchKnowledge("配送时效")).resolves.toEqual({
+      query: "配送时效",
+      citations: [citation],
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/rag/search?query=%E9%85%8D%E9%80%81%E6%97%B6%E6%95%88&limit=3",
+      "/api/auth/refresh",
+      "/api/rag/search?query=%E9%85%8D%E9%80%81%E6%97%B6%E6%95%88&limit=3",
+    ]);
+  });
+
   it("exposes stable backend errors and rejects malformed success bodies", async () => {
     vi.stubGlobal(
       "fetch",

@@ -6,16 +6,24 @@ import { ChatWorkspace } from "@/components/chat-workspace";
 import { LoginScreen } from "@/components/login-screen";
 import { getCurrentUser, logout, type AuthUser } from "@/lib/auth-client";
 import { navigationItems } from "@/lib/navigation";
+import { AUTH_SESSION_EXPIRED_EVENT } from "@/lib/authenticated-fetch";
 
 export function AppShell() {
   const [user, setUser] = useState<AuthUser | null | undefined>(process.env.NODE_ENV === "test" ? { id: "demo-user-li", email: "demo@example.com", role: "CUSTOMER" } : undefined);
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   useEffect(() => { void getCurrentUser().then(setUser); }, []);
+  useEffect(() => {
+    function handleExpiredSession() {
+      setLogoutError(null);
+      setUser(null);
+    }
+
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, handleExpiredSession);
+    return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, handleExpiredSession);
+  }, []);
   if (user === undefined) return <div className="grid min-h-dvh place-items-center text-sm text-ink-muted">正在恢复登录状态…</div>;
   if (!user) return <LoginScreen onSuccess={() => { void getCurrentUser().then(setUser); }} />;
-  const approvalDemoEnabled =
-    process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED === "true";
   const handleLogout = async () => {
     if (isLoggingOut) return;
     setLogoutError(null);
@@ -65,7 +73,7 @@ export function AppShell() {
             />
             <div>
               <p className="font-mono text-[10px] uppercase text-ink-muted">Release channel</p>
-              <p className="mt-1 text-xs font-medium text-ink-muted">V0.6 · Evidence search</p>
+              <p className="mt-1 text-xs font-medium text-ink-muted">V1.0 · Refund sandbox</p>
             </div>
           </div>
         </aside>
@@ -80,7 +88,10 @@ export function AppShell() {
               user={user}
             />
           </div>
-          <ChatWorkspace approvalDemoEnabled={approvalDemoEnabled} />
+          <ChatWorkspace
+            approvalDemoEnabled={false}
+            userRole={user.role}
+          />
         </div>
       </div>
     </div>

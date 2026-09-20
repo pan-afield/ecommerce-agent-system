@@ -108,7 +108,7 @@ async def get_current_refund_approver_id(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="无权审批退款申请。",
                 )
-    except SQLAlchemyError as error:
+    except (SQLAlchemyError, OSError) as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="认证服务暂时不可用，请稍后重试。",

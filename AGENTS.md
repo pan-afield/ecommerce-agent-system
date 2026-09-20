@@ -16,6 +16,16 @@
 - If a test cannot run, state the exact blocker, unverified behavior, and residual risk. Do not claim full verification.
 - Do not enforce a project-wide coverage threshold during the learning versions. Add coverage gates later based on risk and an established baseline.
 
+## Manual Acceptance Workflow
+
+- Apply this workflow to all future manual acceptance sessions, for both frontend and backend and every version.
+- Guide the user through exactly one bounded acceptance item at a time. Do not send the entire checklist as the current assignment or advance to the next item before the user reports the current result.
+- For each item, explain in concise Chinese: what is being verified, the required role/data/environment, the exact operations, where to inspect the result (page area, Network request/response field, or terminal output), and the expected result/pass criteria. Include exact commands and working directories when needed; never ask the user to expose secrets or tokens.
+- After presenting the current item, wait for the user's result. If it fails, focus on that issue, explain the observed discrepancy, and guide diagnosis and re-verification before continuing dependent items.
+- Record each item's actual result as passed, failed, blocked, or not yet verified. Do not infer a pass from automated tests, completed implementation, or a lack of user feedback. Report version acceptance complete only after the required items have been confirmed.
+- Keep the full checklist in acceptance documentation for reference; deliver its items incrementally in conversation. Environment preparation must also be guided in bounded steps, without starting services on the user's behalf unless explicitly requested.
+- This workflow does not transfer ownership of automated tests to the user or change the existing backend teaching and verification cadence.
+
 ## Frontend Testing
 
 - Use Vitest, React Testing Library, `user-event`, and jsdom for component and interaction tests in `apps/web` and `packages/ui`.
@@ -49,6 +59,7 @@
 - Use short reflection questions when they help confirm understanding of security, state, async behavior, transactions, or Agent boundaries; do not add artificial quizzes to every step.
 - Keep each version within its agreed learning scope. Do not introduce later-stage abstractions, dependencies, or product features early.
 - If the user explicitly asks to leave teaching mode for a specific backend task, follow that instruction only for the stated task; otherwise teaching mode remains the default.
+- When the user explicitly delegates a backend coding step to Codex, add concise Chinese function docstrings and necessary comments explaining its purpose, key validation, and transaction/resource or idempotency boundaries where relevant. This delegation applies only to that step; subsequent steps remain in teaching mode.
 - At the end of a backend milestone, summarize what the user implemented, the Python and AI concepts learned, automated verification results, manual checks still needed, and residual risks.
 
 ## Backend Concurrency Teaching

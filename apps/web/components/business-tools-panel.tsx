@@ -3,13 +3,15 @@
 import { useEffect, useRef, type KeyboardEvent } from "react";
 
 import { Button, motionTransitions } from "@ecommerce-agent-system/ui";
-import { BookOpen, PackageCheck, SlidersHorizontal, X } from "lucide-react";
+import { BookOpen, PackageCheck, ShieldAlert, SlidersHorizontal, X } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { KnowledgeSearch } from "@/components/knowledge-search";
 import { OrderLookup } from "@/components/order-lookup";
+import { RefundOperations } from "@/components/refund-operations";
+import type { AuthUser } from "@/lib/auth-client";
 
-export type BusinessTool = "knowledge" | "order";
+export type BusinessTool = "knowledge" | "order" | "refund-operations";
 
 interface BusinessToolsPanelProps {
   activeTool: BusinessTool;
@@ -17,6 +19,7 @@ interface BusinessToolsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectTool: (tool: BusinessTool) => void;
+  userRole?: AuthUser["role"];
 }
 
 const tools: Array<{
@@ -34,14 +37,19 @@ export function BusinessToolsPanel({
   isOpen,
   onClose,
   onSelectTool,
+  userRole = "CUSTOMER",
 }: BusinessToolsPanelProps) {
   const reduceMotion = useReducedMotion() ?? false;
   const orderTabRef = useRef<HTMLButtonElement>(null);
   const knowledgeTabRef = useRef<HTMLButtonElement>(null);
+  const operationsTabRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   const panelRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
-  const tabRefs = { knowledge: knowledgeTabRef, order: orderTabRef };
+  const tabRefs = { knowledge: knowledgeTabRef, order: orderTabRef, "refund-operations": operationsTabRef };
+  const visibleTools = userRole === "ADMIN"
+    ? [...tools, { icon: ShieldAlert, id: "refund-operations" as const, label: "退款运维" }]
+    : tools;
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -80,8 +88,15 @@ export function BusinessToolsPanel({
     }
 
     event.preventDefault();
-    const nextTool =
-      event.key === "ArrowLeft" || event.key === "Home" ? "order" : "knowledge";
+    const currentIndex = visibleTools.findIndex((tool) => tool.id === activeTool);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? visibleTools.length - 1
+        : event.key === "ArrowLeft"
+          ? (currentIndex - 1 + visibleTools.length) % visibleTools.length
+          : (currentIndex + 1) % visibleTools.length;
+    const nextTool = visibleTools[nextIndex]?.id ?? "order";
     onSelectTool(nextTool);
     tabRefs[nextTool].current?.focus();
   }
@@ -125,7 +140,7 @@ export function BusinessToolsPanel({
       >
         <header className="flex min-h-16 shrink-0 items-center justify-between border-b border-line px-4">
           <div className="min-w-0">
-            <p className="font-mono text-[10px] uppercase text-accent">Operations / V0.6</p>
+            <p className="font-mono text-[10px] uppercase text-accent">Operations / V1.0</p>
             <h2 className="mt-0.5 flex items-center gap-2 text-sm font-bold text-ink" id="business-tools-title">
               <SlidersHorizontal className="size-4" aria-hidden="true" />
               业务工具
@@ -145,10 +160,10 @@ export function BusinessToolsPanel({
         <div className="shrink-0 border-b border-line p-3">
           <div
             aria-label="业务工具类型"
-            className="grid grid-cols-2 gap-1 rounded-md bg-canvas p-1"
+            className={`grid gap-1 rounded-md bg-canvas p-1 ${userRole === "ADMIN" ? "grid-cols-3" : "grid-cols-2"}`}
             role="tablist"
           >
-            {tools.map(({ icon: Icon, id, label }) => {
+            {visibleTools.map(({ icon: Icon, id, label }) => {
               const selected = activeTool === id;
               return (
                 <button
@@ -195,6 +210,17 @@ export function BusinessToolsPanel({
           >
             <KnowledgeSearch />
           </div>
+          {userRole === "ADMIN" && (
+            <div
+              aria-labelledby="refund-operations-tool-tab"
+              hidden={activeTool !== "refund-operations"}
+              id="refund-operations-tool-panel"
+              role="tabpanel"
+              tabIndex={0}
+            >
+              <RefundOperations />
+            </div>
+          )}
         </div>
       </motion.aside>
     </>

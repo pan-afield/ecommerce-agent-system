@@ -34,6 +34,7 @@ import {
   saveRefundSession,
   type RefundRequestDraft,
 } from "@/lib/refund-session";
+import { RefundExecutionPanel } from "@/components/refund-execution";
 import type { OrderDetail } from "@/types/order";
 import {
   REFUND_REVIEW_NOTE_MAX_LENGTH,
@@ -559,9 +560,9 @@ export function RefundFlow({
                       </p>
                     ) : (
                       <>
-                        <p className="font-mono text-[10px] uppercase text-ink-muted">Approval demo</p>
+                        <p className="font-mono text-[10px] uppercase text-ink-muted">Admin approval</p>
                         <p className="mt-1 text-xs text-ink-muted">
-                          本地演示审批台，实际权限由服务端配置的审批身份校验。
+                          当前管理员可审批，最终权限与状态转换仍由服务端校验。
                         </p>
                     {reviewDecision === null ? (
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -642,10 +643,16 @@ export function RefundFlow({
                       </p>
                     )}
                     <p className="mt-2 text-xs text-ink-muted">
-                      此结果不代表支付退款已执行；V0.5 仅记录审批决定。
+                      {application.status === "APPROVED"
+                        ? "审批已通过，下一步仍需单独执行退款；当前尚不能视为已退款。"
+                        : "审批已拒绝，未进入资金执行。"}
                     </p>
                   </div>
                 </div>
+              )}
+
+              {application.status === "APPROVED" && (
+                <RefundExecutionPanel application={application} reduceMotion={reduceMotion} />
               )}
             </div>
           </motion.article>

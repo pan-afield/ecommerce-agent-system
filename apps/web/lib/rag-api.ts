@@ -1,4 +1,5 @@
 import { isRagError, isRagSearchResponse } from "@/lib/rag-contract";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
   DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
   formatRateLimitMessage,
@@ -41,7 +42,7 @@ export async function searchKnowledge(
 
   let response: Response;
   try {
-    response = await fetch(`/api/rag/search?${searchParams.toString()}`, {
+    response = await authenticatedFetch(`/api/rag/search?${searchParams.toString()}`, {
       method: "GET",
       cache: "no-store",
       signal: options.signal,

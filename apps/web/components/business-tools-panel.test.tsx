@@ -15,6 +15,10 @@ vi.mock("@/components/knowledge-search", () => ({
   KnowledgeSearch: () => <input aria-label="知识库工具草稿" />,
 }));
 
+vi.mock("@/components/refund-operations", () => ({
+  RefundOperations: () => <div>退款运维内容</div>,
+}));
+
 vi.mock("motion/react", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, useReducedMotion: useReducedMotionMock };
@@ -145,5 +149,32 @@ describe("BusinessToolsPanel", () => {
       "reduced",
     );
     expect(screen.getByRole("textbox", { name: "订单工具草稿" })).toBeInTheDocument();
+  });
+
+  it("shows refund operations only for an ADMIN", () => {
+    const { rerender } = render(
+      <BusinessToolsPanel
+        activeTool="order"
+        approvalDemoEnabled={false}
+        isOpen
+        onClose={() => undefined}
+        onSelectTool={() => undefined}
+        userRole="SUPPORT"
+      />,
+    );
+    expect(screen.queryByRole("tab", { name: "退款运维" })).not.toBeInTheDocument();
+
+    rerender(
+      <BusinessToolsPanel
+        activeTool="refund-operations"
+        approvalDemoEnabled
+        isOpen
+        onClose={() => undefined}
+        onSelectTool={() => undefined}
+        userRole="ADMIN"
+      />,
+    );
+    expect(screen.getByRole("tab", { name: "退款运维" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("退款运维内容")).toBeInTheDocument();
   });
 });

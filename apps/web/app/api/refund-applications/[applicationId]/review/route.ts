@@ -38,7 +38,6 @@ export async function POST(request: Request, context: RouteContext) {
       ? body.review_note.trim() || null
       : null;
   return proxyRefundRequest({
-    auth: "approver",
     body: { decision, review_note: reviewNote },
     isSuccessBody: isRefundApplication,
     method: "POST",

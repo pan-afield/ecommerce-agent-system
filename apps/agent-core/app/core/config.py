@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         "openai_reasoning_effort",
         "jwt_secret_key",
         "rag_embedding_cache_dir",
+        "refund_sandbox_webhook_secret",
+        "refund_sandbox_api_key",
+        "refund_sandbox_base_url",
+        "refund_sandbox_callback_url",
         mode="before",
     )
     @classmethod
@@ -156,6 +160,51 @@ class Settings(BaseSettings):
         default=60,
         validation_alias="RATE_LIMIT_WINDOW_SECONDS",
         ge=1,
+    )
+
+    refund_sandbox_base_url: AnyHttpUrl | None = Field(
+        default=None,
+        validation_alias="REFUND_SANDBOX_BASE_URL",
+    )
+
+    refund_sandbox_request_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias="REFUND_SANDBOX_REQUEST_TIMEOUT_SECONDS",
+        gt=0,
+        le=120,
+    )
+
+    refund_sandbox_webhook_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="REFUND_SANDBOX_WEBHOOK_SECRET",
+    )
+
+    refund_sandbox_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="REFUND_SANDBOX_API_KEY",
+        min_length=16,
+    )
+    refund_sandbox_callback_url: AnyHttpUrl | None = Field(
+        default=None,
+        validation_alias="REFUND_SANDBOX_CALLBACK_URL",
+    )
+    refund_recovery_max_attempts: int = Field(
+        default=5,
+        validation_alias="REFUND_RECOVERY_MAX_ATTEMPTS",
+        ge=1,
+        le=20,
+    )
+    refund_recovery_lease_seconds: int = Field(
+        default=120,
+        validation_alias="REFUND_RECOVERY_LEASE_SECONDS",
+        ge=10,
+        le=3600,
+    )
+    refund_recovery_retry_seconds: int = Field(
+        default=60,
+        validation_alias="REFUND_RECOVERY_RETRY_SECONDS",
+        ge=1,
+        le=3600,
     )
 
 

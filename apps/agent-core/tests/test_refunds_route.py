@@ -2,6 +2,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import jwt
 import pytest
@@ -11,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.routes.refunds import RefundReviewPayload
-from app.services.refund import RefundApplicationRecord
+from app.services.refund import RefundApplicationRecord, RefundExecutionRecord
 from tests.conftest import FakeRoleEngine
 
 TEST_JWT_SECRET = "test-only-jwt-secret-at-least-32-bytes"
@@ -178,6 +179,7 @@ async def test_confirm_refund_sanitizes_database_failure(
     assert "sensitive confirmation database detail" not in response.text
     assert "sensitive confirmation database detail" not in caplog.text
     assert "SQLAlchemyError" in caplog.text
+    assert "Refund confirmation failed" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -424,3 +426,434 @@ async def test_review_refund_sanitizes_database_failure(
     assert "sensitive review detail" not in response.text
     assert "sensitive review detail" not in caplog.text
     assert "SQLAlchemyError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_refund_execution_returns_owner_snapshot_without_idempotency_key(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    record = RefundExecutionRecord(
+        id="execution-001",
+        refund_application_id="refund-001",
+        idempotency_key="refund:refund-001",
+        status="PROCESSING",
+        amount=Decimal("88.25"),
+        currency="CNY",
+        provider_reference=None,
+    )
+    with patch(
+        "app.api.routes.refunds.fetch_refund_execution", new=AsyncMock(return_value=record)
+    ) as fetch:
+        response = await client.get(
+            "/v1/refund-applications/refund-001/execution",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "execution-001",
+        "status": "PROCESSING",
+        "amount": "88.25",
+        "currency": "CNY",
+        "provider_reference": None,
+    }
+    fetch.assert_awaited_once_with(
+        engine=app.state.database_engine,
+        user_id="demo-user-li",
+        refund_application_id="refund-001",
+    )
+
+
+@pytest.mark.asyncio
+async def test_refund_execution_requires_login(client: AsyncClient) -> None:
+    with patch(
+        "app.api.routes.refunds.fetch_refund_execution", new=AsyncMock()
+    ) as fetch:
+        response = await client.get("/v1/refund-applications/refund-001/execution")
+
+    assert response.status_code == 401
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refund_execution_hides_other_or_missing_application(
+    client: AsyncClient,
+) -> None:
+    with patch(
+        "app.api.routes.refunds.fetch_refund_execution", new=AsyncMock(return_value=None)
+    ) as fetch:
+        response = await client.get(
+            "/v1/refund-applications/refund-other-user/execution",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert fetch.await_args is not None
+    assert fetch.await_args.kwargs["user_id"] == "demo-user-li"
+
+
+@pytest.mark.asyncio
+async def test_refund_execution_sanitizes_database_failure(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.fetch_refund_execution",
+            new=AsyncMock(side_effect=SQLAlchemyError("sensitive refund database detail")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.get(
+            "/v1/refund-applications/refund-001/execution",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
+    assert "sensitive refund database detail" not in response.text
+    assert "sensitive refund database detail" not in caplog.text
+    assert "SQLAlchemyError" in caplog.text
+    assert "Refund status failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_refund_execution_returns_failed_snapshot_without_idempotency_key(
+    client: AsyncClient,
+) -> None:
+    record = RefundExecutionRecord(
+        id="execution-failed",
+        refund_application_id="refund-001",
+        idempotency_key="refund:refund-001",
+        status="FAILED",
+        amount=Decimal("88.25"),
+        currency="CNY",
+        provider_reference=None,
+    )
+    with patch(
+        "app.api.routes.refunds.fetch_refund_execution", new=AsyncMock(return_value=record)
+    ):
+        response = await client.get(
+            "/v1/refund-applications/refund-001/execution",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "execution-failed",
+        "status": "FAILED",
+        "amount": "88.25",
+        "currency": "CNY",
+        "provider_reference": None,
+    }
+    assert "idempotency_key" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_returns_persisted_execution(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    record = RefundExecutionRecord(
+        id="execution-001",
+        refund_application_id="refund-001",
+        idempotency_key="refund:refund-001",
+        status="SUCCEEDED",
+        amount=Decimal("88.25"),
+        currency="CNY",
+        provider_reference="sandbox-ref-001",
+    )
+    generated_id = UUID("11111111-1111-1111-1111-111111111111")
+    with (
+        patch("app.api.routes.refunds.uuid4", return_value=generated_id),
+        patch(
+            "app.api.routes.refunds.run_refund_sandbox", new=AsyncMock(return_value=record)
+        ) as run_sandbox,
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/execute",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "execution-001",
+        "status": "SUCCEEDED",
+        "amount": "88.25",
+        "currency": "CNY",
+        "provider_reference": "sandbox-ref-001",
+    }
+    assert run_sandbox.await_args is not None
+    assert run_sandbox.await_args.kwargs["engine"] is app.state.database_engine
+    assert run_sandbox.await_args.kwargs["user_id"] == "demo-user-li"
+    assert run_sandbox.await_args.kwargs["refund_application_id"] == "refund-001"
+    assert run_sandbox.await_args.kwargs["execution_id"] == str(generated_id)
+    assert run_sandbox.await_args.kwargs["adapter"] is app.state.refund_sandbox_adapter
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_hides_missing_or_other_application(
+    client: AsyncClient,
+) -> None:
+    with patch(
+        "app.api.routes.refunds.run_refund_sandbox", new=AsyncMock(return_value=None)
+    ) as run_sandbox:
+        response = await client.post(
+            "/v1/refund-applications/refund-other-user/execute",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "退款申请不存在。"}
+    run_sandbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_requires_login(client: AsyncClient) -> None:
+    with patch(
+        "app.api.routes.refunds.run_refund_sandbox", new=AsyncMock()
+    ) as run_sandbox:
+        response = await client.post("/v1/refund-applications/refund-001/execute")
+
+    assert response.status_code == 401
+    run_sandbox.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_sanitizes_database_failure(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.run_refund_sandbox",
+            new=AsyncMock(side_effect=SQLAlchemyError("sensitive execution database detail")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/execute",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
+    assert "sensitive execution database detail" not in response.text
+    assert "sensitive execution database detail" not in caplog.text
+    assert "SQLAlchemyError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_maps_timeout_to_unknown_result(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.run_refund_sandbox",
+            new=AsyncMock(side_effect=TimeoutError("sensitive provider timeout")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/execute",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款结果暂时未知，请稍后查询。"}
+    assert "sensitive provider timeout" not in response.text
+    assert "sensitive provider timeout" not in caplog.text
+    assert "TimeoutError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_refund_execute_maps_sandbox_contract_error(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.run_refund_sandbox",
+            new=AsyncMock(side_effect=RuntimeError("sensitive provider payload")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/execute",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "退款服务响应无效，请稍后重试。"}
+    assert "sensitive provider payload" not in response.text
+    assert "sensitive provider payload" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_returns_existing_execution_snapshot(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    record = RefundExecutionRecord(
+        id="execution-001",
+        refund_application_id="refund-001",
+        idempotency_key="refund:refund-001",
+        status="SUCCEEDED",
+        amount=Decimal("88.25"),
+        currency="CNY",
+        provider_reference="provider-ref-001",
+    )
+    with patch(
+        "app.api.routes.refunds.recover_refund_sandbox", new=AsyncMock(return_value=record)
+    ) as recover:
+        response = await client.post(
+            "/v1/refund-applications/refund-001/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "execution-001",
+        "status": "SUCCEEDED",
+        "amount": "88.25",
+        "currency": "CNY",
+        "provider_reference": "provider-ref-001",
+    }
+    recover.assert_awaited_once_with(
+        engine=app.state.database_engine,
+        user_id="demo-user-li",
+        refund_application_id="refund-001",
+        adapter=app.state.refund_sandbox_adapter,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_returns_failed_snapshot_without_idempotency_key(
+    client: AsyncClient,
+) -> None:
+    record = RefundExecutionRecord(
+        id="execution-failed",
+        refund_application_id="refund-001",
+        idempotency_key="refund:refund-001",
+        status="FAILED",
+        amount=Decimal("88.25"),
+        currency="CNY",
+        provider_reference=None,
+    )
+    with patch(
+        "app.api.routes.refunds.recover_refund_sandbox", new=AsyncMock(return_value=record)
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "execution-failed",
+        "status": "FAILED",
+        "amount": "88.25",
+        "currency": "CNY",
+        "provider_reference": None,
+    }
+    assert "idempotency_key" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_hides_missing_or_other_application(
+    client: AsyncClient,
+) -> None:
+    with patch(
+        "app.api.routes.refunds.recover_refund_sandbox", new=AsyncMock(return_value=None)
+    ) as recover:
+        response = await client.post(
+            "/v1/refund-applications/refund-other-user/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "退款申请不存在。"}
+    recover.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_requires_login(client: AsyncClient) -> None:
+    with patch(
+        "app.api.routes.refunds.recover_refund_sandbox", new=AsyncMock()
+    ) as recover:
+        response = await client.post("/v1/refund-applications/refund-001/recover")
+
+    assert response.status_code == 401
+    recover.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_maps_database_failure(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.recover_refund_sandbox",
+            new=AsyncMock(side_effect=SQLAlchemyError("sensitive recovery database detail")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款服务暂时不可用，请稍后重试。"}
+    assert "sensitive recovery database detail" not in response.text
+    assert "sensitive recovery database detail" not in caplog.text
+    assert "SQLAlchemyError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_maps_timeout_to_unknown_result(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.recover_refund_sandbox",
+            new=AsyncMock(side_effect=TimeoutError("sensitive recovery timeout")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "退款结果暂时未知，请稍后查询。"}
+    assert "sensitive recovery timeout" not in response.text
+    assert "sensitive recovery timeout" not in caplog.text
+    assert "TimeoutError" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_recover_refund_maps_sandbox_contract_error(
+    client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.recover_refund_sandbox",
+            new=AsyncMock(side_effect=RuntimeError("sensitive recovery payload")),
+        ),
+        caplog.at_level(logging.WARNING),
+    ):
+        response = await client.post(
+            "/v1/refund-applications/refund-001/recover",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "退款服务响应无效，请稍后重试。"}
+    assert "sensitive recovery payload" not in response.text
+    assert "sensitive recovery payload" not in caplog.text
+    assert "RuntimeError" in caplog.text

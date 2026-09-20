@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException, status
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -17,6 +18,7 @@ from app.rag.service import build_rag_context, build_rag_prompt
 from app.rag.vector_store import RagVectorDimensionError
 from app.services.chat import ChatError, ChatService
 from app.services.health import database_is_ready
+from app.services.refund_sandbox import HttpRefundSandbox, InMemoryRefundSandbox
 from app.tools.orders import build_lookup_order_tool
 
 
@@ -34,8 +36,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.database_engine = engine
         app.state.readiness_probe = database_is_ready
         app.state.chat_service = None
+        refund_http_client: httpx.AsyncClient | None = None
 
         try:
+            if app_settings.refund_sandbox_base_url is None:
+                app.state.refund_sandbox_adapter = InMemoryRefundSandbox()
+            else:
+                refund_http_client = httpx.AsyncClient(
+                    base_url=str(app_settings.refund_sandbox_base_url),
+                    timeout=app_settings.refund_sandbox_request_timeout_seconds,
+                    headers=(
+                        {
+                            "Authorization": "Bearer "
+                            + app_settings.refund_sandbox_api_key.get_secret_value()
+                        }
+                        if app_settings.refund_sandbox_api_key is not None
+                        else {}
+                    ),
+                )
+                app.state.refund_sandbox_adapter = HttpRefundSandbox(refund_http_client)
+
             try:
                 app.state.rag_embeddings = create_local_embeddings(app_settings)
             except Exception:
@@ -112,10 +132,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 yield
         finally:
-            if redis_client is not None:
-                await redis_client.aclose()
-
-            await engine.dispose()
+            try:
+                if refund_http_client is not None:
+                    await refund_http_client.aclose()
+            finally:
+                try:
+                    if redis_client is not None:
+                        await redis_client.aclose()
+                finally:
+                    await engine.dispose()
 
     application = FastAPI(
         title=app_settings.app_name,

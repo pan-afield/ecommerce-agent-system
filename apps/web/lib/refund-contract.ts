@@ -1,11 +1,16 @@
 import {
   REFUND_ERROR_CODES,
+  REFUND_EXECUTION_STATUSES,
+  REFUND_RECOVERY_STATUSES,
   REFUND_REASON_CODES,
   REFUND_STATUSES,
   type RefundApplication,
   type RefundAssessment,
   type RefundError,
   type RefundErrorCode,
+  type RefundExecution,
+  type RefundOperationDetail,
+  type RefundOperationQueue,
 } from "@/types/refund";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,5 +67,79 @@ export function isRefundError(value: unknown): value is RefundError {
     isRecord(value.error) &&
     isRefundErrorCode(value.error.code) &&
     isNonEmptyString(value.error.message)
+  );
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isIsoDateString(value: unknown): value is string {
+  return isNonEmptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+export function isRefundExecution(value: unknown): value is RefundExecution {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.id) &&
+    typeof value.status === "string" &&
+    (REFUND_EXECUTION_STATUSES as readonly string[]).includes(value.status) &&
+    isNonEmptyString(value.amount) &&
+    isNonEmptyString(value.currency) &&
+    isNullableString(value.provider_reference)
+  );
+}
+
+export function isRefundOperationQueue(value: unknown): value is RefundOperationQueue {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.items) &&
+    value.items.every(
+      (item) =>
+        isRecord(item) &&
+        isNonEmptyString(item.refund_application_id) &&
+        typeof item.execution_status === "string" &&
+        (REFUND_EXECUTION_STATUSES as readonly string[]).includes(item.execution_status) &&
+        typeof item.status === "string" &&
+        (REFUND_RECOVERY_STATUSES as readonly string[]).includes(item.status) &&
+        Number.isInteger(item.attempts) &&
+        Number(item.attempts) >= 0 &&
+        isNullableString(item.last_error_code) &&
+        isIsoDateString(item.updated_at),
+    )
+  );
+}
+
+export function isRefundOperationDetail(value: unknown): value is RefundOperationDetail {
+  return (
+    isRecord(value) &&
+    isRefundExecution(value.execution) &&
+    (value.recovery === null ||
+      (isRecord(value.recovery) &&
+        typeof value.recovery.status === "string" &&
+        (REFUND_RECOVERY_STATUSES as readonly string[]).includes(value.recovery.status) &&
+        Number.isInteger(value.recovery.attempts) &&
+        Number(value.recovery.attempts) >= 0 &&
+        isIsoDateString(value.recovery.next_attempt_at) &&
+        isNullableString(value.recovery.last_error_code) &&
+        isIsoDateString(value.recovery.updated_at))) &&
+    Array.isArray(value.events) &&
+    value.events.every(
+      (event) =>
+        isRecord(event) &&
+        isNonEmptyString(event.id) &&
+        isNonEmptyString(event.action) &&
+        isNonEmptyString(event.source) &&
+        isNullableString(event.actor_user_id) &&
+        isNullableString(event.source_event_id) &&
+        isNullableString(event.from_status) &&
+        isNullableString(event.to_status) &&
+        isNullableString(event.provider_reference) &&
+        isNullableString(event.error_code) &&
+        isNullableString(event.note) &&
+        isIsoDateString(event.created_at),
+    ) &&
+    typeof value.next_after_id === "string" &&
+    /^\d+$/.test(value.next_after_id)
   );
 }

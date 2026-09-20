@@ -36,7 +36,6 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    auth: "customer",
     body: {
       requested_amount: body.requested_amount,
       requested_currency: body.requested_currency.toUpperCase(),

@@ -10,12 +10,14 @@ const {
   confirmRefundMock,
   createRefundMock,
   getCurrentRefundMock,
+  getExecutionMock,
   reviewRefundMock,
 } = vi.hoisted(() => ({
   assessRefundMock: vi.fn(),
   confirmRefundMock: vi.fn(),
   createRefundMock: vi.fn(),
   getCurrentRefundMock: vi.fn(),
+  getExecutionMock: vi.fn(),
   reviewRefundMock: vi.fn(),
 }));
 
@@ -27,6 +29,7 @@ vi.mock("@/lib/refund-api", async (importOriginal) => {
     confirmRefundApplication: confirmRefundMock,
     createRefundApplication: createRefundMock,
     getCurrentRefundApplication: getCurrentRefundMock,
+    getRefundExecution: getExecutionMock,
     reviewRefundApplication: reviewRefundMock,
   };
 });
@@ -70,7 +73,11 @@ describe("RefundFlow", () => {
     confirmRefundMock.mockReset();
     createRefundMock.mockReset();
     getCurrentRefundMock.mockReset();
+    getExecutionMock.mockReset();
     reviewRefundMock.mockReset();
+    getExecutionMock.mockRejectedValue(
+      new RefundApiError("refund_not_found", "无记录", 404),
+    );
     getCurrentRefundMock.mockImplementation(async () => {
       const rawApplication = window.sessionStorage.getItem(REFUND_SESSION_STORAGE_KEY);
       return rawApplication ? (JSON.parse(rawApplication) as RefundApplication) : null;
@@ -299,7 +306,11 @@ describe("RefundFlow", () => {
       "已人工核对。",
     );
     expect(await screen.findByRole("heading", { name: label })).toBeInTheDocument();
-    expect(screen.getByText(/不代表支付退款已执行/)).toBeInTheDocument();
+    if (status === "APPROVED") {
+      expect(screen.getByText(/尚不能视为已退款/)).toBeInTheDocument();
+    } else {
+      expect(screen.getByText(/未进入资金执行/)).toBeInTheDocument();
+    }
   });
 
   it("keeps a full-order refund in the same manual approval path", async () => {

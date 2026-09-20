@@ -3,6 +3,7 @@ import {
   isChatResponse,
   isChatStreamAssistantEvent,
 } from "@/lib/chat-contract";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
   DEFAULT_RATE_LIMIT_RETRY_AFTER_SECONDS,
   formatRateLimitMessage,
@@ -38,7 +39,7 @@ export class ChatApiError extends Error {
 export async function sendChatMessage(payload: ChatRequest): Promise<ChatResponse> {
   let response: Response;
   try {
-    response = await fetch("/api/chat", {
+    response = await authenticatedFetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -181,7 +182,7 @@ export async function streamChatMessage(
 
   let response: Response;
   try {
-    response = await fetch("/api/chat/stream", {
+    response = await authenticatedFetch("/api/chat/stream", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),

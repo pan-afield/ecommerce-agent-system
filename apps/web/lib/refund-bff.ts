@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getBackendDetail } from "@/lib/backend-error";
-import { createAgentCoreApproverAuthorization, createAgentCoreAuthorization } from "@/lib/server-auth";
+import { getSessionAgentCoreAuthorization } from "@/lib/server-auth";
 import type { RefundError, RefundErrorCode, RefundReasonCode } from "@/types/refund";
 
 const DEFAULT_AGENT_CORE_URL = "http://localhost:8000";
@@ -49,11 +49,12 @@ export function isRefundCurrency(value: unknown): value is string {
 }
 
 interface ProxyRefundOptions {
-  auth: "approver" | "customer";
   body?: unknown;
-  isSuccessBody: (value: unknown) => boolean;
+  isSuccessBody?: (value: unknown) => boolean;
   method: "GET" | "POST";
   path: string;
+  successStatus?: 200 | 204;
+  unknownOutcomeOnTimeout?: boolean;
 }
 
 function isTimeoutError(error: unknown) {
@@ -66,17 +67,12 @@ function isTimeoutError(error: unknown) {
 }
 
 export async function proxyRefundRequest(options: ProxyRefundOptions) {
-  const authorization =
-    options.auth === "approver"
-      ? createAgentCoreApproverAuthorization()
-      : createAgentCoreAuthorization();
+  const authorization = await getSessionAgentCoreAuthorization();
   if (authorization === null) {
     return refundErrorResponse(
-      503,
-      options.auth === "approver" ? "refund_approver_unavailable" : "refund_auth_unavailable",
-      options.auth === "approver"
-        ? "退款审批服务尚未配置，请联系管理员。"
-        : "认证服务尚未配置，请联系管理员。",
+      401,
+      "refund_unauthorized",
+      "请先登录。",
     );
   }
 
@@ -85,22 +81,32 @@ export async function proxyRefundRequest(options: ProxyRefundOptions) {
   try {
     upstreamResponse = await fetch(`${agentCoreUrl}${options.path}`, {
       method: options.method,
-      headers: {
-        authorization,
-        "content-type": "application/json",
-      },
+      headers: options.body === undefined
+        ? { authorization }
+        : { authorization, "content-type": "application/json" },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       cache: "no-store",
       signal: AbortSignal.timeout(REFUND_UPSTREAM_TIMEOUT_MS),
     });
   } catch (error) {
+    const timedOut = isTimeoutError(error);
     return refundErrorResponse(
-      isTimeoutError(error) ? 504 : 503,
-      isTimeoutError(error) ? "refund_upstream_timeout" : "refund_upstream_unreachable",
-      isTimeoutError(error)
-        ? "退款服务响应超时，请稍后重试。"
+      timedOut ? 504 : 503,
+      timedOut && options.unknownOutcomeOnTimeout
+        ? "refund_outcome_unknown"
+        : timedOut
+          ? "refund_upstream_timeout"
+          : "refund_upstream_unreachable",
+      timedOut
+        ? options.unknownOutcomeOnTimeout
+          ? "退款结果暂时未知，请查询执行状态。"
+          : "退款服务响应超时，请稍后重试。"
         : "无法连接退款服务，请稍后重试。",
     );
+  }
+
+  if (upstreamResponse.status === 204 && options.successStatus === 204) {
+    return new NextResponse(null, { status: 204 });
   }
 
   let upstreamBody: unknown;
@@ -114,7 +120,7 @@ export async function proxyRefundRequest(options: ProxyRefundOptions) {
     );
   }
 
-  if (upstreamResponse.ok && options.isSuccessBody(upstreamBody)) {
+  if (upstreamResponse.ok && options.isSuccessBody?.(upstreamBody)) {
     return NextResponse.json(upstreamBody, { status: upstreamResponse.status });
   }
 
@@ -123,7 +129,13 @@ export async function proxyRefundRequest(options: ProxyRefundOptions) {
     return refundErrorResponse(401, "refund_unauthorized", "登录状态无效，请重新登录。");
   }
   if (upstreamResponse.status === 403 && detail) {
-    return refundErrorResponse(403, "refund_forbidden", "当前身份无权审批退款申请。");
+    return refundErrorResponse(403, "refund_forbidden", "当前身份无权执行此退款操作。");
+  }
+  if (upstreamResponse.status === 429) {
+    const response = refundErrorResponse(429, "refund_rate_limited", "操作过于频繁，请稍后重试。");
+    const retryAfter = upstreamResponse.headers.get("retry-after");
+    if (retryAfter) response.headers.set("retry-after", retryAfter);
+    return response;
   }
   if (upstreamResponse.status === 404 && detail) {
     return refundErrorResponse(404, "refund_not_found", detail);
@@ -156,6 +168,12 @@ export async function proxyRefundRequest(options: ProxyRefundOptions) {
     );
   }
   if (upstreamResponse.status === 503 && detail) {
+    if (
+      options.unknownOutcomeOnTimeout &&
+      detail === "退款结果暂时未知，请稍后查询。"
+    ) {
+      return refundErrorResponse(503, "refund_outcome_unknown", detail);
+    }
     return refundErrorResponse(503, "refund_service_unavailable", "退款服务暂时不可用，请稍后重试。");
   }
 

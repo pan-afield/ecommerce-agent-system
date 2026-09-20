@@ -198,7 +198,7 @@ describe("V0.5 refund BFF routes", () => {
     const reviewHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
     const reviewPayload = (reviewHeaders.authorization ?? "").split(".")[1] ?? "";
     expect(JSON.parse(Buffer.from(reviewPayload, "base64url").toString("utf8")).sub).toBe(
-      "staff-zhang",
+      "demo-user-li",
     );
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(
       JSON.stringify({ decision: "APPROVED", review_note: "已核对" }),
@@ -246,41 +246,33 @@ describe("V0.5 refund BFF routes", () => {
     });
   });
 
-  it("fails closed for missing approval configuration and invalid requests", async () => {
-    delete process.env.REFUND_APPROVER_USER_ID;
+  it("rejects invalid requests before contacting the backend", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal("fetch", fetchMock);
 
-    const unconfigured = await reviewRefund(request({ decision: "APPROVED" }), {
-      params: Promise.resolve({ applicationId: "refund-001" }),
-    });
     const invalid = await assessRefund(
       request({ requested_amount: "not-money", requested_currency: "CNY" }),
       { params: Promise.resolve({ orderId: "../unsafe" }) },
     );
 
-    expect(unconfigured.status).toBe(503);
-    expect(await unconfigured.json()).toMatchObject({
-      error: { code: "refund_approver_unavailable" },
-    });
     expect(invalid.status).toBe(400);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps browser-triggered approval disabled unless the local demo gate is explicit", async () => {
+  it("uses the current session and leaves approval authorization to Agent Core", async () => {
     delete process.env.AGENT_CORE_REFUND_APPROVAL_DEMO_ENABLED;
-    const fetchMock = vi.fn<typeof fetch>();
+    delete process.env.REFUND_APPROVER_USER_ID;
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ ...application, status: "APPROVED", created: undefined }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await reviewRefund(request({ decision: "APPROVED" }), {
       params: Promise.resolve({ applicationId: "refund-001" }),
     });
 
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({
-      error: { code: "refund_approver_unavailable" },
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(customerSubject(fetchMock)).toBe("demo-user-li");
   });
 
   it("normalizes network, timeout, and non-JSON upstream failures", async () => {
