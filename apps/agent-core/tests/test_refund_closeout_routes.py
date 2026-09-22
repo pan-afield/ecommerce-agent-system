@@ -225,6 +225,23 @@ async def test_sandbox_auth_is_closed_by_default(
     assert response.status_code == status
 
 
+def test_sandbox_openapi_uses_bearer_security_scheme() -> None:
+    app = create_sandbox_app(
+        Settings(_env_file=None, refund_sandbox_api_key="fixture-sandbox-token")
+    )
+
+    schema = app.openapi()
+    assert schema["components"]["securitySchemes"]["RefundSandboxBearer"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    operation = schema["paths"]["/refunds/{key}"]["get"]
+    assert operation["security"] == [{"RefundSandboxBearer": []}]
+    assert "authorization" not in {
+        parameter["name"].lower() for parameter in operation.get("parameters", [])
+    }
+
+
 async def test_sandbox_refuses_production_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

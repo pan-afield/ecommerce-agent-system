@@ -476,12 +476,72 @@ async def test_refund_execution_requires_login(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_refund_execution_hides_other_or_missing_application(
+async def test_refund_execution_returns_null_for_owned_application_without_execution(
+    app: FastAPI,
     client: AsyncClient,
 ) -> None:
-    with patch(
-        "app.api.routes.refunds.fetch_refund_execution", new=AsyncMock(return_value=None)
-    ) as fetch:
+    application = RefundApplicationRecord(
+        id="refund-001",
+        user_id="demo-user-li",
+        order_id="order-demo-001",
+        request_id="refund-request-001",
+        requested_amount=Decimal("88.25"),
+        currency="CNY",
+        status="APPROVED",
+    )
+    with (
+        patch(
+            "app.api.routes.refunds.fetch_refund_execution",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.api.routes.refunds.fetch_refund_application_by_id",
+            new=AsyncMock(return_value=application),
+        ) as fetch_application,
+    ):
+        response = await client.get(
+            "/v1/refund-applications/refund-001/execution",
+            headers=make_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() is None
+    fetch_application.assert_awaited_once_with(
+        app.state.database_engine,
+        application_id="refund-001",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "application",
+    [
+        None,
+        RefundApplicationRecord(
+            id="refund-other-user",
+            user_id="other-user",
+            order_id="order-other-user",
+            request_id="refund-request-other-user",
+            requested_amount=Decimal("88.25"),
+            currency="CNY",
+            status="APPROVED",
+        ),
+    ],
+)
+async def test_refund_execution_hides_other_or_missing_application(
+    client: AsyncClient,
+    application: RefundApplicationRecord | None,
+) -> None:
+    with (
+        patch(
+            "app.api.routes.refunds.fetch_refund_execution",
+            new=AsyncMock(return_value=None),
+        ) as fetch,
+        patch(
+            "app.api.routes.refunds.fetch_refund_application_by_id",
+            new=AsyncMock(return_value=application),
+        ),
+    ):
         response = await client.get(
             "/v1/refund-applications/refund-other-user/execution",
             headers=make_auth_headers(),

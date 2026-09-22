@@ -3,6 +3,8 @@ import {
   isRefundAssessment,
   isRefundError,
   isRefundExecution,
+  isNullableRefundExecution,
+  isNullableRefundApplication,
   isRefundOperationDetail,
   isRefundOperationQueue,
 } from "@/lib/refund-contract";
@@ -96,23 +98,12 @@ export async function getCurrentRefundApplication(
   orderId: string,
 ): Promise<RefundApplication | null> {
   const normalizedOrderId = orderId.trim();
-  try {
-    return await postRefund(
-      `/api/orders/${encodeURIComponent(normalizedOrderId)}/refund-application`,
-      undefined,
-      isRefundApplication,
-      "GET",
-    );
-  } catch (error) {
-    if (
-      error instanceof RefundApiError &&
-      error.status === 404 &&
-      error.message === "退款申请不存在。"
-    ) {
-      return null;
-    }
-    throw error;
-  }
+  return postRefund(
+    `/api/orders/${encodeURIComponent(normalizedOrderId)}/refund-application`,
+    undefined,
+    isNullableRefundApplication,
+    "GET",
+  );
 }
 
 export function assessRefund(
@@ -171,9 +162,9 @@ export function getRefundExecution(applicationId: string) {
   return postRefund(
     `/api/refund-applications/${encodeURIComponent(applicationId)}/execution`,
     undefined,
-    isRefundExecution,
+    isNullableRefundExecution,
     "GET",
-  ) satisfies Promise<RefundExecution>;
+  ) satisfies Promise<RefundExecution | null>;
 }
 
 export function executeRefund(applicationId: string) {

@@ -179,7 +179,7 @@ class RefundExecutionResponse(BaseModel):
     currency: str
 
 
-@router.get("/{application_id}/execution", response_model=RefundExecutionResponse)
+@router.get("/{application_id}/execution", response_model=RefundExecutionResponse | None)
 async def refund_execution(
     application_id: str,
     user_id: Annotated[
@@ -187,20 +187,31 @@ async def refund_execution(
         Depends(get_current_user_id),
     ],
     request: Request,
-) -> RefundExecutionResponse:
+) -> RefundExecutionResponse | None:
+    """查询当前用户退款申请的执行快照；尚未创建执行记录时返回空值。"""
     engine = cast(AsyncEngine, request.app.state.database_engine)
     try:
+        # 先按申请归属查询执行记录，避免泄露其他用户的执行状态。
         record = await fetch_refund_execution(
             engine=engine, user_id=user_id, refund_application_id=application_id
         )
+
+        if record is None:
+            # 空执行记录只有在申请确实属于当前用户时才表示“尚未执行”。
+            application = await fetch_refund_application_by_id(
+                engine,
+                application_id=application_id,
+            )
+            if application is None or application.user_id != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="无记录",
+                )
+            return None
     except (SQLAlchemyError, OSError) as error:
+        # 数据库或资源错误统一转换为脱敏的服务不可用响应。
         raise _refund_http_error(error, operation="status") from error
 
-    if record is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="无记录",
-        )
     return RefundExecutionResponse(
         id=record.id,
         status=record.status,

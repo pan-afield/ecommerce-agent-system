@@ -128,10 +128,20 @@ describe("V0.5 refund BFF routes", () => {
     expect(customerSubject(fetchMock)).toBe("demo-user-li");
   });
 
-  it.each([
-    ["退款申请不存在。", "refund_not_found"],
-    ["订单不存在。", "refund_not_found"],
-  ] as const)("preserves the authoritative GET 404 detail: %s", async (detail, code) => {
+  it("returns a successful null when the owned order has no refund application", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(null)));
+
+    const response = await getCurrentRefund(request(), {
+      params: Promise.resolve({ orderId: "order-demo-001" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBeNull();
+  });
+
+  it("preserves the authoritative missing-order 404", async () => {
+    const detail = "订单不存在。";
+    const code = "refund_not_found";
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ detail }, 404)),

@@ -100,6 +100,7 @@ export function RefundOperations() {
   const [loadingQueue, setLoadingQueue] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
   const [busyAction, setBusyAction] = useState<RefundOperationAction | null>(null);
   const [action, setAction] = useState<RefundOperationAction | null>(null);
   const [note, setNote] = useState("");
@@ -110,6 +111,7 @@ export function RefundOperations() {
   const [approvalNote, setApprovalNote] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [approvalResult, setApprovalResult] = useState<RefundApplication | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const queueRequest = useRef(0);
 
   const loadQueue = useCallback(async () => {
@@ -130,10 +132,13 @@ export function RefundOperations() {
   const loadDetail = useCallback(async (applicationId: string) => {
     setSelectedId(applicationId);
     setLoadingDetail(true);
+    setHasMoreEvents(false);
     setError(null);
     setAction(null);
     try {
-      setDetail(await getRefundOperation(applicationId, "0", 50));
+      const next = await getRefundOperation(applicationId, "0", 50);
+      setDetail(next);
+      setHasMoreEvents(next.events.length === 50);
     } catch (requestError) {
       setDetail(null);
       setError(errorMessage(requestError));
@@ -154,12 +159,13 @@ export function RefundOperations() {
   }, [loadQueue]);
 
   async function loadMoreEvents() {
-    if (!detail || !selectedId || loadingMore || detail.events.length === 0) return;
+    if (!detail || !selectedId || loadingMore || !hasMoreEvents) return;
     setLoadingMore(true);
     setError(null);
     try {
       const next = await getRefundOperation(selectedId, detail.next_after_id, 50);
       setDetail({ ...next, events: [...detail.events, ...next.events] });
+      setHasMoreEvents(next.events.length === 50);
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -189,13 +195,19 @@ export function RefundOperations() {
     if (!normalizedId || !approvalDecision || approvalBusy) return;
     setApprovalBusy(true);
     setError(null);
+    setApprovalError(null);
+    setApprovalResult(null);
     try {
       setApprovalResult(
         await reviewRefundApplication(normalizedId, approvalDecision, approvalNote.trim()),
       );
       setApprovalDecision(null);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      if (requestError instanceof RefundApiError && requestError.code === "refund_conflict") {
+        setApprovalDecision(null);
+        if (selectedId === normalizedId) await loadDetail(normalizedId);
+      }
+      setApprovalError(errorMessage(requestError));
     } finally {
       setApprovalBusy(false);
     }
@@ -227,8 +239,8 @@ export function RefundOperations() {
         </Button>
       </div>
 
-      <div className="mt-4 border-y border-line py-4">
-        <p className="text-xs font-bold text-ink">审批申请</p>
+      <section aria-labelledby="refund-approval-title" className="mt-4 border-y border-line py-4">
+        <p className="text-xs font-bold text-ink" id="refund-approval-title">审批申请</p>
         <p className="mt-1 text-xs leading-5 text-ink-muted">
           输入客户提供的退款申请编号。审批只改变申请状态，不代表资金已退款。
         </p>
@@ -238,7 +250,7 @@ export function RefundOperations() {
             aria-label="待审批退款申请编号"
             className="mt-1.5 h-9 w-full rounded-md border border-line-strong bg-surface px-3 font-mono text-xs text-ink outline-none focus:outline-2 focus:outline-offset-2 focus:outline-accent"
             maxLength={128}
-            onChange={(event) => { setApprovalId(event.target.value); setApprovalResult(null); }}
+            onChange={(event) => { setApprovalId(event.target.value); setApprovalResult(null); setApprovalError(null); setApprovalDecision(null); }}
             value={approvalId}
           />
         </label>
@@ -254,8 +266,8 @@ export function RefundOperations() {
         </label>
         {approvalDecision === null ? (
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button disabled={!approvalId.trim()} onClick={() => setApprovalDecision("APPROVED")} variant="secondary">准备批准</Button>
-            <Button disabled={!approvalId.trim()} onClick={() => setApprovalDecision("REJECTED")} variant="secondary">准备拒绝</Button>
+            <Button disabled={!approvalId.trim()} onClick={() => { setApprovalError(null); setApprovalDecision("APPROVED"); }} variant="secondary">准备批准</Button>
+            <Button disabled={!approvalId.trim()} onClick={() => { setApprovalError(null); setApprovalDecision("REJECTED"); }} variant="secondary">准备拒绝</Button>
           </div>
         ) : (
           <div className="mt-3 border-l-2 border-accent pl-3">
@@ -269,12 +281,18 @@ export function RefundOperations() {
             </div>
           </div>
         )}
+        {approvalError && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-accent/30 bg-accent-soft p-3 text-accent" role="alert">
+            <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <p className="text-xs font-semibold leading-5">{approvalError}</p>
+          </div>
+        )}
         {approvalResult && (
           <p aria-live="polite" className="mt-3 text-xs font-semibold text-positive" role="status">
             申请 {approvalResult.id} 已{approvalResult.status === "APPROVED" ? "批准" : "拒绝"}；客户刷新后可看到权威状态。
           </p>
         )}
-      </div>
+      </section>
 
       {loadingQueue ? (
         <p aria-live="polite" className="mt-4 flex items-center gap-2 text-xs text-ink-muted" role="status">
@@ -375,7 +393,7 @@ export function RefundOperations() {
               ) : (
                 <ol className="relative mt-3 ml-1"><>{detail.events.map((event) => <AuditEventRow event={event} key={event.id} />)}</></ol>
               )}
-              {detail.events.length >= 50 && (
+              {hasMoreEvents && (
                 <Button className="mt-3" disabled={loadingMore} onClick={() => void loadMoreEvents()} variant="ghost">
                   {loadingMore && <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />}加载更多审计
                 </Button>

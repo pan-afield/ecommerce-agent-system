@@ -122,6 +122,17 @@ describe("V1.0 refund BFF routes", () => {
     });
   });
 
+  it("returns a successful null when the owned application has no execution", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(null)));
+
+    const response = await getExecution(postRequest(), {
+      params: Promise.resolve({ applicationId: "refund-001" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBeNull();
+  });
+
   it("preserves authoritative missing execution and service errors", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

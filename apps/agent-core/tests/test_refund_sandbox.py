@@ -175,6 +175,23 @@ async def test_http_sandbox_maps_timeout_without_provider_detail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_http_sandbox_execute_treats_connection_loss_as_unknown_without_retry() -> None:
+    attempts = 0
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("sensitive connection detail", request=http_request)
+
+    async with make_http_client(handler) as client:
+        with pytest.raises(TimeoutError) as caught:
+            await HttpRefundSandbox(client).execute(make_request("refund:connection-loss"))
+
+    assert attempts == 1
+    assert "sensitive connection detail" not in str(caught.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [400, 500])
 async def test_http_sandbox_maps_http_failure_without_response_body(
     status_code: int,

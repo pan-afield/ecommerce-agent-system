@@ -120,18 +120,13 @@ describe("refund API client", () => {
     ]);
   });
 
-  it("reads the current application and treats only the explicit missing-application 404 as empty", async () => {
+  it("reads the current application and accepts a successful null as empty", async () => {
     const currentApplication = { ...application };
     delete (currentApplication as Partial<typeof application>).created;
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(currentApplication))
-      .mockResolvedValueOnce(
-        jsonResponse(
-          { error: { code: "refund_not_found", message: "退款申请不存在。" } },
-          404,
-        ),
-      )
+      .mockResolvedValueOnce(jsonResponse(null))
       .mockResolvedValueOnce(
         jsonResponse(
           { error: { code: "refund_not_found", message: "订单不存在。" } },
@@ -224,6 +219,12 @@ describe("refund API client", () => {
       "/api/refund-applications/refund-001/recover",
     ]);
     expect(fetchMock.mock.calls.every(([, init]) => init?.body === undefined)).toBe(true);
+  });
+
+  it("accepts a successful null when an owned application has no execution", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(null)));
+
+    await expect(getRefundExecution("refund-001")).resolves.toBeNull();
   });
 
   it("validates admin queue, detail, and string audit cursors", async () => {

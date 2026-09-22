@@ -83,12 +83,7 @@ export function RefundExecutionPanel({ application, reduceMotion }: RefundExecut
       setExecution(await getRefundExecution(application.id));
       setUnknownOutcome(false);
     } catch (lookupError) {
-      if (lookupError instanceof RefundApiError && lookupError.status === 404) {
-        setExecution(null);
-        setUnknownOutcome(false);
-      } else {
-        setError(messageOf(lookupError));
-      }
+      setError(messageOf(lookupError));
     } finally {
       requestInFlight.current = false;
       setBusyAction(null);

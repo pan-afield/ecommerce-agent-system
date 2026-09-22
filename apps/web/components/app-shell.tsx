@@ -4,7 +4,12 @@ import { DesktopAccountArea, MobileAccountArea } from "@/components/account-area
 import { Brand } from "@/components/brand";
 import { ChatWorkspace } from "@/components/chat-workspace";
 import { LoginScreen } from "@/components/login-screen";
-import { getCurrentUser, logout, type AuthUser } from "@/lib/auth-client";
+import {
+  clearUserWorkspaceSession,
+  getCurrentUser,
+  logout,
+  type AuthUser,
+} from "@/lib/auth-client";
 import { navigationItems } from "@/lib/navigation";
 import { AUTH_SESSION_EXPIRED_EVENT } from "@/lib/authenticated-fetch";
 
@@ -15,6 +20,7 @@ export function AppShell() {
   useEffect(() => { void getCurrentUser().then(setUser); }, []);
   useEffect(() => {
     function handleExpiredSession() {
+      clearUserWorkspaceSession();
       setLogoutError(null);
       setUser(null);
     }

@@ -1,4 +1,4 @@
-import { isRefundApplication } from "@/lib/refund-contract";
+import { isNullableRefundApplication } from "@/lib/refund-contract";
 import { isSafeRefundId, proxyRefundRequest, refundErrorResponse } from "@/lib/refund-bff";
 import { ORDER_ID_MAX_LENGTH } from "@/types/order";
 
@@ -13,7 +13,7 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    isSuccessBody: isRefundApplication,
+    isSuccessBody: isNullableRefundApplication,
     method: "GET",
     path: `/v1/orders/${encodeURIComponent(orderId)}/refund-application`,
   });

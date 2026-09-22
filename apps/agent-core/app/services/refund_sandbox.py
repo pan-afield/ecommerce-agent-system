@@ -84,8 +84,8 @@ class HttpRefundSandbox:
             )
             response.raise_for_status()
             payload = response.json()
-        except httpx.TimeoutException as error:
-            raise TimeoutError("Refund sandbox request timed out") from error
+        except httpx.RequestError as error:
+            raise TimeoutError("Refund sandbox outcome unknown") from error
         except (httpx.HTTPError, ValueError) as error:
             raise RuntimeError("Invalid refund sandbox response") from error
 
@@ -128,8 +128,7 @@ def parse_refund_sandbox_result(payload: object) -> RefundSandboxResult:
     if isinstance(raw_provider_reference, str) and len(raw_provider_reference) > 128:
         raise RuntimeError("Invalid refund sandbox response")
     if raw_status == "SUCCEEDED" and (
-        not isinstance(raw_provider_reference, str)
-        or not raw_provider_reference.strip()
+        not isinstance(raw_provider_reference, str) or not raw_provider_reference.strip()
     ):
         raise RuntimeError("Invalid refund sandbox response")
 

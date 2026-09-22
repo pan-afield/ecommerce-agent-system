@@ -307,7 +307,7 @@ class CurrentRefundApplicationResponse(BaseModel):
 
 @router.get(
     "/{order_id}/refund-application",
-    response_model=CurrentRefundApplicationResponse,
+    response_model=CurrentRefundApplicationResponse | None,
 )
 async def get_current_refund_application(
     order_id: str,
@@ -317,7 +317,7 @@ async def get_current_refund_application(
         OrderDetailResponse | None,
         Depends(load_owned_order),
     ],
-) -> CurrentRefundApplicationResponse:
+) -> CurrentRefundApplicationResponse | None:
     if order is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -344,10 +344,7 @@ async def get_current_refund_application(
         ) from error
 
     if application is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="退款申请不存在。",
-        )
+        return None
 
     return CurrentRefundApplicationResponse(
         id=application.id,

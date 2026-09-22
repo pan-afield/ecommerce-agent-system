@@ -47,7 +47,7 @@ describe("RefundExecutionPanel", () => {
 
   it("requires explicit confirmation and prevents duplicate execution", async () => {
     const user = userEvent.setup();
-    getExecutionMock.mockRejectedValue(new RefundApiError("refund_not_found", "无记录", 404));
+    getExecutionMock.mockResolvedValue(null);
     let resolveExecution: ((value: RefundExecution) => void) | undefined;
     executeMock.mockReturnValue(new Promise((resolve) => { resolveExecution = resolve; }));
     render(<RefundExecutionPanel application={application} reduceMotion={false} />);
@@ -66,7 +66,7 @@ describe("RefundExecutionPanel", () => {
 
   it("treats execution timeout as unknown and only offers a status lookup", async () => {
     const user = userEvent.setup();
-    getExecutionMock.mockRejectedValueOnce(new RefundApiError("refund_not_found", "无记录", 404));
+    getExecutionMock.mockResolvedValueOnce(null);
     executeMock.mockRejectedValue(new RefundApiError("refund_outcome_unknown", "退款结果暂时未知。", 503));
     getExecutionMock.mockResolvedValueOnce(processing);
     render(<RefundExecutionPanel application={application} reduceMotion={false} />);
@@ -79,6 +79,16 @@ describe("RefundExecutionPanel", () => {
     await user.click(screen.getByRole("button", { name: "查询执行状态" }));
     expect((await screen.findAllByText("渠道处理中")).length).toBeGreaterThan(0);
     expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a missing or unauthorized application as an error", async () => {
+    getExecutionMock.mockRejectedValue(
+      new RefundApiError("refund_not_found", "无记录", 404),
+    );
+    render(<RefundExecutionPanel application={application} reduceMotion={false} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("无记录");
+    expect(screen.queryByRole("button", { name: "开始执行退款" })).not.toBeInTheDocument();
   });
 
   it("restores success after refresh and shows the provider reference", async () => {

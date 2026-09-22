@@ -1,10 +1,13 @@
 import { act, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { AppShell } from "./app-shell";
 import { AUTH_SESSION_EXPIRED_EVENT } from "@/lib/authenticated-fetch";
+import { REFUND_SESSION_STORAGE_KEY } from "@/lib/refund-session";
 
 describe("AppShell", () => {
+  afterEach(() => window.sessionStorage.clear());
+
   it("renders the service workspace navigation and welcome state", () => {
     render(<AppShell />);
 
@@ -34,11 +37,13 @@ describe("AppShell", () => {
   });
 
   it("returns to the login screen after refresh failure invalidates the session", () => {
+    window.sessionStorage.setItem(REFUND_SESSION_STORAGE_KEY, "customer-refund");
     render(<AppShell />);
 
     act(() => window.dispatchEvent(new Event(AUTH_SESSION_EXPIRED_EVENT)));
 
     expect(screen.getByRole("heading", { name: "登录客服工作台" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "客服工作台" })).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem(REFUND_SESSION_STORAGE_KEY)).toBeNull();
   });
 });

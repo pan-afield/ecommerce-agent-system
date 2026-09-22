@@ -54,6 +54,12 @@ export function isRefundApplication(value: unknown): value is RefundApplication 
   );
 }
 
+export function isNullableRefundApplication(
+  value: unknown,
+): value is RefundApplication | null {
+  return value === null || isRefundApplication(value);
+}
+
 export function isRefundErrorCode(value: unknown): value is RefundErrorCode {
   return (
     typeof value === "string" &&
@@ -88,6 +94,12 @@ export function isRefundExecution(value: unknown): value is RefundExecution {
     isNonEmptyString(value.currency) &&
     isNullableString(value.provider_reference)
   );
+}
+
+export function isNullableRefundExecution(
+  value: unknown,
+): value is RefundExecution | null {
+  return value === null || isRefundExecution(value);
 }
 
 export function isRefundOperationQueue(value: unknown): value is RefundOperationQueue {

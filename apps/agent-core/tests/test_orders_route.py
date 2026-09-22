@@ -674,7 +674,7 @@ async def test_current_refund_application_returns_owned_non_rejected_record(
 
 
 @pytest.mark.asyncio
-async def test_current_refund_application_returns_404_when_none_exists(
+async def test_current_refund_application_returns_null_when_none_exists(
     client: AsyncClient,
     app: FastAPI,
 ) -> None:
@@ -689,8 +689,8 @@ async def test_current_refund_application_returns_404_when_none_exists(
             headers=make_auth_headers(),
         )
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "退款申请不存在。"}
+    assert response.status_code == 200
+    assert response.json() is None
 
 
 @pytest.mark.asyncio

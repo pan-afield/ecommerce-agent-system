@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -50,13 +51,28 @@ def create_sandbox_app(settings: Settings | None = None) -> FastAPI:
             await engine.dispose()
 
     app = FastAPI(title="Local Refund HTTP Sandbox", lifespan=lifespan)
+    bearer_scheme = HTTPBearer(
+        auto_error=False,
+        scheme_name="RefundSandboxBearer",
+    )
 
-    async def authorize(authorization: Annotated[str | None, Header()] = None) -> None:
+    async def authorize(
+        credentials: Annotated[
+            HTTPAuthorizationCredentials | None,
+            Depends(bearer_scheme),
+        ],
+    ) -> None:
         """每个沙箱操作都需服务凭证，缺配置时关闭入口而非匿名放行。"""
         if config.refund_sandbox_api_key is None:
             raise HTTPException(503, "沙箱访问密钥尚未配置。")
-        expected = "Bearer " + config.refund_sandbox_api_key.get_secret_value()
-        if not hmac.compare_digest((authorization or "").encode(), expected.encode()):
+        expected = config.refund_sandbox_api_key.get_secret_value()
+        provided = credentials.credentials if credentials is not None else ""
+
+        if (
+            credentials is None
+            or credentials.scheme.lower() != "bearer"
+            or not hmac.compare_digest(provided.encode(), expected.encode())
+        ):
             raise HTTPException(401, "沙箱凭证无效。")
 
     @app.exception_handler(SQLAlchemyError)

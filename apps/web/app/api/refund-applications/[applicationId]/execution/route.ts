@@ -1,4 +1,4 @@
-import { isRefundExecution } from "@/lib/refund-contract";
+import { isNullableRefundExecution } from "@/lib/refund-contract";
 import { isSafeRefundId, proxyRefundRequest, refundErrorResponse } from "@/lib/refund-bff";
 
 interface RouteContext {
@@ -12,7 +12,7 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   return proxyRefundRequest({
-    isSuccessBody: isRefundExecution,
+    isSuccessBody: isNullableRefundExecution,
     method: "GET",
     path: `/v1/refund-applications/${encodeURIComponent(applicationId)}/execution`,
   });

@@ -346,6 +346,12 @@ async def test_conflicting_terminal_is_visible_to_admin_without_overwriting_stat
         actor_user_id="admin",
         note="提供方确认成功，失败通知有误",
     )
+    assert not await acknowledge_refund_conflict(
+        execution_engine,
+        application_id="refund-001",
+        actor_user_id="admin",
+        note="重复确认",
+    )
     assert await job_status(execution_engine) == "COMPLETED"
     async with execution_engine.connect() as connection:
         assert await connection.scalar(text("SELECT status FROM refund_executions")) == "SUCCEEDED"
@@ -358,6 +364,50 @@ async def test_conflicting_terminal_is_visible_to_admin_without_overwriting_stat
             )
             == 1
         )
+        acknowledged = (
+            await connection.execute(
+                text("""
+            SELECT actor_user_id,note FROM refund_audit_events
+            WHERE action='CONFLICT_ACKNOWLEDGED'
+        """)
+            )
+        ).all()
+        assert [tuple(row) for row in acknowledged] == [("admin", "提供方确认成功，失败通知有误")]
+
+
+async def test_audit_pages_over_fifty_events_preserve_bigint_ids(
+    execution_engine: AsyncEngine,
+) -> None:
+    await prepare(execution_engine)
+    async with execution_engine.begin() as connection:
+        await connection.execute(
+            text("""
+            INSERT INTO refund_audit_events (id,execution_id,action,source)
+            SELECT 9007199254740992 + n,'execution-1','MANUAL_REQUIRED','test'
+            FROM generate_series(1,51) AS n
+        """)
+        )
+    backend = FastAPI()
+    backend.include_router(operations_router)
+    backend.state.database_engine = execution_engine
+    backend.dependency_overrides[get_current_refund_approver_id] = lambda: "admin"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=backend), base_url="http://agent"
+    ) as client:
+        first = await client.get("/v1/refund-operations/refund-001?limit=50")
+        assert first.status_code == 200
+        first_ids = [event["id"] for event in first.json()["events"]]
+        assert len(first_ids) == 50
+        assert first_ids[2] == "9007199254740993"
+        assert first.json()["next_after_id"] == first_ids[-1]
+        second = await client.get(
+            "/v1/refund-operations/refund-001",
+            params={"after_id": first.json()["next_after_id"], "limit": 50},
+        )
+        assert second.status_code == 200
+        second_ids = [event["id"] for event in second.json()["events"]]
+        assert second_ids == ["9007199254741041", "9007199254741042", "9007199254741043"]
+        assert set(first_ids).isdisjoint(second_ids)
 
 
 async def test_compensation_does_not_apply_after_webhook_completes(
