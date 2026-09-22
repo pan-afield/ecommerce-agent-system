@@ -60,13 +60,14 @@ const reasonLabels: Record<string, string> = {
   order_not_refundable: "当前订单状态不支持退款",
 };
 
-type RefundAction = "assess" | "confirm" | "create" | "review";
+type RefundAction = "assess" | "confirm" | "create" | "refresh" | "review";
 type RefundLookupState = "error" | "idle" | "loading" | "ready";
 
 interface RefundFlowProps {
   approvalDemoEnabled?: boolean;
   order: OrderDetail | null;
   reduceMotion: boolean;
+  sessionScope?: string;
 }
 
 function normalizeRefundError(error: unknown) {
@@ -99,6 +100,7 @@ export function RefundFlow({
   approvalDemoEnabled = false,
   order,
   reduceMotion,
+  sessionScope,
 }: RefundFlowProps) {
   const [application, setApplication] = useState<RefundApplication | null>(null);
   const [assessment, setAssessment] = useState<RefundAssessment | null>(null);
@@ -128,9 +130,9 @@ export function RefundFlow({
     setRestored(wasRestored);
     setLookupState("ready");
     requestId.current = nextApplication.request_id;
-    saveRefundSession(window.sessionStorage, nextApplication);
-    clearRefundRequest(window.sessionStorage);
-  }, []);
+    saveRefundSession(window.sessionStorage, nextApplication, sessionScope);
+    clearRefundRequest(window.sessionStorage, sessionScope);
+  }, [sessionScope]);
 
   const restoreRequestDraft = useCallback((draft: RefundRequestDraft | null) => {
     if (draft === null) {
@@ -160,7 +162,7 @@ export function RefundFlow({
         }
 
         if (currentApplication === null) {
-          clearRefundSession(window.sessionStorage);
+          clearRefundSession(window.sessionStorage, sessionScope);
           setApplication(null);
           setRestored(false);
           setLookupState("ready");
@@ -176,12 +178,12 @@ export function RefundFlow({
         setLookupState("error");
       }
     },
-    [commitApplication],
+    [commitApplication, sessionScope],
   );
 
   useEffect(() => {
-    const savedApplication = loadRefundSession(window.sessionStorage);
-    const savedRequest = loadRefundRequest(window.sessionStorage);
+    const savedApplication = loadRefundSession(window.sessionStorage, sessionScope);
+    const savedRequest = loadRefundRequest(window.sessionStorage, sessionScope);
     const targetOrderId =
       suppliedOrderId ?? savedApplication?.order_id ?? savedRequest?.orderId;
     if (!targetOrderId) {
@@ -209,7 +211,7 @@ export function RefundFlow({
       active = false;
       lookupGeneration.current += 1;
     };
-  }, [order?.currency, requestCurrentApplication, restoreRequestDraft, suppliedOrderId]);
+  }, [order?.currency, requestCurrentApplication, restoreRequestDraft, sessionScope, suppliedOrderId]);
 
   const currentOrderId = application?.order_id ?? order?.id ?? lookupOrderId;
   const currency = application?.currency ?? order?.currency ?? lookupCurrency ?? "CNY";
@@ -237,7 +239,7 @@ export function RefundFlow({
           currency,
           orderId: currentOrderId,
           requestId: requestId.current,
-        });
+        }, sessionScope);
         commitApplication(
           await createRefundApplication(
             currentOrderId,
@@ -249,6 +251,16 @@ export function RefundFlow({
       } else if (action === "confirm" && application) {
         commitApplication(await confirmRefundApplication(application.id));
         setConfirmArmed(false);
+      } else if (action === "refresh" && application) {
+        const currentApplication = await getCurrentRefundApplication(application.order_id);
+        if (currentApplication === null) {
+          throw new RefundApiError(
+            "refund_not_found",
+            "当前退款申请不存在，请稍后重试。",
+            404,
+          );
+        }
+        commitApplication(currentApplication);
       } else if (action === "review" && application && reviewDecision) {
         commitApplication(
           await reviewRefundApplication(application.id, reviewDecision, reviewNote),
@@ -274,8 +286,8 @@ export function RefundFlow({
     if (requestInFlight.current) {
       return;
     }
-    clearRefundSession(window.sessionStorage);
-    clearRefundRequest(window.sessionStorage);
+    clearRefundSession(window.sessionStorage, sessionScope);
+    clearRefundRequest(window.sessionStorage, sessionScope);
     setApplication(null);
     setAssessment(null);
     setExpanded(Boolean(currentOrderId));
@@ -308,9 +320,26 @@ export function RefundFlow({
           </h3>
         </div>
         {application ? (
-          <Badge className="border-line-strong bg-canvas text-ink">
-            {statusLabels[application.status]}
-          </Badge>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Badge className="border-line-strong bg-canvas text-ink">
+              {statusLabels[application.status]}
+            </Badge>
+            <Button
+              aria-label="刷新申请状态"
+              className="h-8 px-2.5 text-xs"
+              disabled={Boolean(busyAction)}
+              onClick={() => void runAction("refresh")}
+              title="刷新申请状态"
+              variant="secondary"
+            >
+              {busyAction === "refresh" ? (
+                <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+              )}
+              刷新申请状态
+            </Button>
+          </div>
         ) : lookupState === "loading" ? (
           <Badge className="border-line-strong bg-canvas text-ink-muted">
             正在读取状态
@@ -632,6 +661,11 @@ export function RefundFlow({
                     <h4 className="text-sm font-bold text-ink">
                       {statusLabels[application.status]}
                     </h4>
+                    {application.reviewed_by_user_id && (
+                      <p className="mt-1 text-xs leading-5 text-ink-muted">
+                        审批人：{application.reviewed_by_user_id}
+                      </p>
+                    )}
                     {application.review_note && (
                       <p className="mt-1 text-xs leading-5 text-ink-muted">
                         审批备注：{application.review_note}
@@ -639,7 +673,7 @@ export function RefundFlow({
                     )}
                     {formatShanghaiDateTime(application.reviewed_at) && (
                       <p className="mt-1 font-mono text-[10px] text-ink-muted">
-                        {formatShanghaiDateTime(application.reviewed_at)}
+                        审批时间：{formatShanghaiDateTime(application.reviewed_at)}
                       </p>
                     )}
                     <p className="mt-2 text-xs text-ink-muted">

@@ -9,6 +9,7 @@ const {
   assessRefundMock,
   confirmRefundMock,
   createRefundMock,
+  executeRefundMock,
   getCurrentRefundMock,
   getExecutionMock,
   reviewRefundMock,
@@ -16,6 +17,7 @@ const {
   assessRefundMock: vi.fn(),
   confirmRefundMock: vi.fn(),
   createRefundMock: vi.fn(),
+  executeRefundMock: vi.fn(),
   getCurrentRefundMock: vi.fn(),
   getExecutionMock: vi.fn(),
   reviewRefundMock: vi.fn(),
@@ -28,6 +30,7 @@ vi.mock("@/lib/refund-api", async (importOriginal) => {
     assessRefund: assessRefundMock,
     confirmRefundApplication: confirmRefundMock,
     createRefundApplication: createRefundMock,
+    executeRefund: executeRefundMock,
     getCurrentRefundApplication: getCurrentRefundMock,
     getRefundExecution: getExecutionMock,
     reviewRefundApplication: reviewRefundMock,
@@ -72,6 +75,7 @@ describe("RefundFlow", () => {
     assessRefundMock.mockReset();
     confirmRefundMock.mockReset();
     createRefundMock.mockReset();
+    executeRefundMock.mockReset();
     getCurrentRefundMock.mockReset();
     getExecutionMock.mockReset();
     reviewRefundMock.mockReset();
@@ -121,6 +125,116 @@ describe("RefundFlow", () => {
     expect(screen.getByText("refund-authoritative")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "申请退款" })).not.toBeInTheDocument();
     expect(getCurrentRefundMock).toHaveBeenCalledWith("order-demo-001");
+  });
+
+  it("refreshes a pending application into the approved state with one current-application GET", async () => {
+    const user = userEvent.setup();
+    const pendingApplication = { ...awaitingApplication, status: "PENDING_MANUAL_APPROVAL" as const };
+    const approvedApplication = {
+      ...pendingApplication,
+      status: "APPROVED" as const,
+      reviewed_by_user_id: "staff-zhang",
+      reviewed_at: "2026-08-23T10:00:00Z",
+      review_note: "已人工核对。",
+    };
+    let resolveRefresh: ((application: RefundApplication) => void) | null = null;
+    getCurrentRefundMock
+      .mockResolvedValueOnce(pendingApplication)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+      );
+    seedApplication(pendingApplication);
+    render(<RefundFlow order={order} reduceMotion={false} sessionScope="chat-message:one" />);
+
+    expect(await screen.findByText("申请已暂停，等待人工决定")).toBeInTheDocument();
+    const refreshButton = screen.getByRole("button", { name: "刷新申请状态" });
+    await user.click(refreshButton);
+
+    expect(refreshButton).toBeDisabled();
+    expect(await screen.findByRole("status")).toHaveTextContent("正在同步退款状态");
+    await act(async () => {
+      resolveRefresh?.(approvedApplication);
+    });
+    expect(await screen.findByRole("heading", { name: "审批已批准" })).toBeInTheDocument();
+    expect(screen.getByText("审批人：staff-zhang")).toBeInTheDocument();
+    expect(screen.getByText("审批备注：已人工核对。")).toBeInTheDocument();
+    expect(screen.getByText(/审批时间：/)).toBeInTheDocument();
+    expect(getCurrentRefundMock).toHaveBeenCalledTimes(2);
+    expect(getCurrentRefundMock).toHaveBeenNthCalledWith(2, "order-demo-001");
+    expect(createRefundMock).not.toHaveBeenCalled();
+    expect(confirmRefundMock).not.toHaveBeenCalled();
+    expect(reviewRefundMock).not.toHaveBeenCalled();
+    expect(executeRefundMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the current application and exposes retry when refreshing fails", async () => {
+    const user = userEvent.setup();
+    const pendingApplication = { ...awaitingApplication, status: "PENDING_MANUAL_APPROVAL" as const };
+    getCurrentRefundMock
+      .mockResolvedValueOnce(pendingApplication)
+      .mockRejectedValueOnce(
+        new RefundApiError("refund_service_unavailable", "退款服务暂时不可用，请稍后重试。", 503),
+      );
+    seedApplication(pendingApplication);
+    render(<RefundFlow order={order} reduceMotion={false} sessionScope="chat-message:one" />);
+
+    expect(await screen.findByText("申请已暂停，等待人工决定")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "刷新申请状态" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("退款服务暂时不可用，请稍后重试。");
+    expect(screen.getByText("申请已暂停，等待人工决定")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试退款操作" })).toBeEnabled();
+  });
+
+  it("updates only the selected refund flow when multiple chat orders refresh", async () => {
+    const user = userEvent.setup();
+    const firstOrder = order;
+    const secondOrder = { ...order, id: "order-demo-002", order_number: "EC-20260810-002" };
+    const firstPending = {
+      ...awaitingApplication,
+      order_id: firstOrder.id,
+      status: "PENDING_MANUAL_APPROVAL" as const,
+    };
+    const secondPending = {
+      ...awaitingApplication,
+      id: "refund-002",
+      order_id: secondOrder.id,
+      status: "PENDING_MANUAL_APPROVAL" as const,
+    };
+    const firstApproved = {
+      ...firstPending,
+      status: "APPROVED" as const,
+      reviewed_by_user_id: "staff-zhang",
+      reviewed_at: "2026-08-23T10:00:00Z",
+      review_note: "已人工核对。",
+    };
+    const lookupCounts = new Map<string, number>();
+    getCurrentRefundMock.mockImplementation(async (orderId: string) => {
+      const count = lookupCounts.get(orderId) ?? 0;
+      lookupCounts.set(orderId, count + 1);
+      if (orderId === firstOrder.id) {
+        return count === 0 ? firstPending : firstApproved;
+      }
+      return secondPending;
+    });
+    render(
+      <>
+        <RefundFlow order={firstOrder} reduceMotion={false} sessionScope="chat-message:first" />
+        <RefundFlow order={secondOrder} reduceMotion={false} sessionScope="chat-message:second" />
+      </>,
+    );
+
+    expect(await screen.findAllByText("申请已暂停，等待人工决定")).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "刷新申请状态" })[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByText("审批人：staff-zhang")).toBeInTheDocument();
+      expect(screen.getAllByText("申请已暂停，等待人工决定")).toHaveLength(1);
+    });
+    expect(lookupCounts.get(firstOrder.id)).toBe(2);
+    expect(lookupCounts.get(secondOrder.id)).toBe(1);
   });
 
   it("keeps a GET 503 as an error instead of exposing the application entry", async () => {

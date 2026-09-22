@@ -2,7 +2,15 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getOrderMock, streamChatMessageMock, useReducedMotionMock } = vi.hoisted(() => ({
+const {
+  assessRefundMock,
+  getCurrentRefundMock,
+  getOrderMock,
+  streamChatMessageMock,
+  useReducedMotionMock,
+} = vi.hoisted(() => ({
+  assessRefundMock: vi.fn(),
+  getCurrentRefundMock: vi.fn(),
   getOrderMock: vi.fn(),
   streamChatMessageMock: vi.fn(),
   useReducedMotionMock: vi.fn(),
@@ -16,6 +24,15 @@ vi.mock("@/lib/chat-api", async (importOriginal) => {
 vi.mock("@/lib/order-api", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return { ...actual, getOrder: getOrderMock };
+});
+
+vi.mock("@/lib/refund-api", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    assessRefund: assessRefundMock,
+    getCurrentRefundApplication: getCurrentRefundMock,
+  };
 });
 
 vi.mock("motion/react", async (importOriginal) => {
@@ -54,10 +71,28 @@ const orderFixture: OrderDetail = {
   ],
 };
 
+const chatOrderFixture: OrderDetail = {
+  ...orderFixture,
+  id: "order-chat-20260922-004",
+  order_number: "EC-CHAT-20260922-004",
+  status: "pending",
+  total_amount: "39.00",
+  shipment_events: [],
+};
+
+const secondChatOrderFixture: OrderDetail = {
+  ...chatOrderFixture,
+  id: "order-chat-20260922-005",
+  order_number: "EC-CHAT-20260922-005",
+};
+
 describe("ChatWorkspace", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
     getOrderMock.mockReset();
+    getCurrentRefundMock.mockReset();
+    assessRefundMock.mockReset();
+    getCurrentRefundMock.mockResolvedValue(null);
     streamChatMessageMock.mockReset();
     useReducedMotionMock.mockReset();
     useReducedMotionMock.mockReturnValue(false);
@@ -314,6 +349,103 @@ describe("ChatWorkspace", () => {
     expect(events.textContent?.indexOf("商家已确认订单")).toBeLessThan(
       events.textContent?.indexOf("包裹运输中") ?? -1,
     );
+  });
+
+  it("renders the refund entry directly below a chat order result", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock.mockResolvedValue({
+      assistant: { content: "这是订单详情。" },
+      model: "test-model",
+    });
+    getOrderMock.mockResolvedValue(chatOrderFixture);
+    render(<ChatWorkspace />);
+
+    await user.type(
+      screen.getByRole("textbox", { name: "输入消息" }),
+      "查询订单 order-chat-20260922-004，能申请退款吗？",
+    );
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+
+    expect(await screen.findByRole("button", { name: "申请退款" })).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "EC-CHAT-20260922-004" })).toBeInTheDocument();
+  });
+
+  it("checks a chat order through the backend and does not offer creation when the order is not refundable", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock.mockResolvedValue({
+      assistant: { content: "当前订单待处理。" },
+      model: "test-model",
+    });
+    getOrderMock.mockResolvedValue(chatOrderFixture);
+    assessRefundMock.mockResolvedValue({
+      eligible_for_review: false,
+      reason: "order_not_refundable",
+      requires_customer_confirmation: false,
+    });
+    render(<ChatWorkspace />);
+
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "查询订单 order-chat-20260922-004");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await user.click(await screen.findByRole("button", { name: "申请退款" }));
+
+    const refundSection = screen.getByRole("heading", { name: "退款申请" }).closest("section");
+    expect(refundSection).not.toBeNull();
+    const refund = within(refundSection as HTMLElement);
+    const amount = refund.getByRole("textbox", { name: "退款金额" });
+    await user.clear(amount);
+    await user.type(amount, "39.00");
+    await user.click(refund.getByRole("button", { name: "检查资格" }));
+
+    expect(assessRefundMock).toHaveBeenCalledWith("order-chat-20260922-004", "39.00", "CNY");
+    expect(await refund.findByText("当前订单状态不支持退款")).toBeInTheDocument();
+    expect(refund.queryByRole("button", { name: "创建申请" })).not.toBeInTheDocument();
+  });
+
+  it("does not render refund controls for an ordinary assistant message", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock.mockResolvedValue({
+      assistant: { content: "普通客服回复。" },
+      model: "test-model",
+    });
+    render(<ChatWorkspace />);
+
+    await user.type(screen.getByRole("textbox", { name: "输入消息" }), "你好");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("普通客服回复。");
+
+    expect(screen.queryByRole("button", { name: "申请退款" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "退款申请" })).not.toBeInTheDocument();
+  });
+
+  it("keeps refund state isolated between multiple historical chat orders", async () => {
+    const user = userEvent.setup();
+    streamChatMessageMock
+      .mockResolvedValueOnce({ assistant: { content: "第一笔订单。" }, model: "test-model" })
+      .mockResolvedValueOnce({ assistant: { content: "第二笔订单。" }, model: "test-model" });
+    getOrderMock
+      .mockResolvedValueOnce(chatOrderFixture)
+      .mockResolvedValueOnce(secondChatOrderFixture);
+    render(<ChatWorkspace />);
+
+    const input = screen.getByRole("textbox", { name: "输入消息" });
+    await user.type(input, "查询订单 order-chat-20260922-004");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第一笔订单。");
+    await user.type(input, "查询订单 order-chat-20260922-005");
+    await user.click(screen.getByRole("button", { name: "发送消息" }));
+    await screen.findByText("第二笔订单。");
+
+    const refundButtons = screen.getAllByRole("button", { name: "申请退款" });
+    expect(refundButtons).toHaveLength(2);
+    await user.click(refundButtons[0]!);
+
+    const sections = screen.getAllByRole("heading", { name: "退款申请" }).map((heading) =>
+      heading.closest("section"),
+    );
+    expect(sections).toHaveLength(2);
+    expect(within(sections[0] as HTMLElement).getByRole("button", { name: "检查资格" })).toBeInTheDocument();
+    expect(within(sections[1] as HTMLElement).queryByRole("button", { name: "检查资格" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("CNY 39.00")).toHaveLength(2);
   });
 
   it("renders authoritative citations returned with a streamed assistant response", async () => {

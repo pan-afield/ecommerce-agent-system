@@ -1,3 +1,4 @@
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
@@ -70,6 +71,11 @@ def select_model_message(
     return message_content
 
 
+def has_explicit_order_id(message: str) -> bool:
+    """识别消息中的明确订单 ID，决定是否可以跳过索要编号的追问。"""
+    return re.search(r"\border-[a-z0-9][a-z0-9_-]{0,57}\b", message, re.IGNORECASE) is not None
+
+
 # 根据是否存在待处理意图，决定开始新订单流程还是继续当前流程。
 def route_intent(
     state: SupportState,
@@ -80,6 +86,8 @@ def route_intent(
     message = state.get("normalized_message")
     if message is None:
         raise ValueError("normalized_message must be set before routing intent")
+    if has_explicit_order_id(message):
+        return "order_continue"
     if any(keyword in message for keyword in ("订单", "物流", "快递", "包裹")):
         return "order_start"
 
@@ -323,7 +331,7 @@ def build_support_graph(
         intent = await intent_router(message, pending_intent)
 
         if intent == "order":
-            if pending_intent == "order":
+            if pending_intent == "order" or has_explicit_order_id(message):
                 return "order_continue"
             return "order_start"
 

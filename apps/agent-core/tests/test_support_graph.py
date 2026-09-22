@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Literal
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
@@ -74,6 +75,9 @@ class FakeChatModel:
         ("我的订单物流到哪了", "order_start"),
         ("这个快递什么时候到", "order_start"),
         ("包裹已经发出了吗", "order_start"),
+        ("查询订单 order-chat-20260922-002 的物流进度", "order_continue"),
+        ("查询订单 ORDER-CHAT-20260922-002", "order_continue"),
+        ("查询订单 order-", "order_start"),
     ],
 )
 def test_route_intent_classifies_normalized_message(
@@ -230,6 +234,60 @@ async def test_order_intent_requests_identifier_without_calling_model() -> None:
         "我的订单物流到哪了",
         "我可以帮你查询订单，请提供订单编号。",
     ]
+    assert chat_model.received_messages == []
+
+
+@pytest.mark.parametrize("use_intent_router", [False, True])
+async def test_first_order_message_with_identifier_reaches_order_model(
+    use_intent_router: bool,
+) -> None:
+    chat_model = FakeChatModel(response="已收到订单编号。")
+
+    async def fake_intent_router(
+        message: str,
+        pending_intent: Literal["order"] | None,
+    ) -> Literal["order"]:
+        assert message == "查询订单 order-chat-20260922-002 的物流进度"
+        assert pending_intent is None
+        return "order"
+
+    support_graph = build_support_graph(
+        chat_model.generate_reply,
+        order_tools=[fake_lookup_order],
+        intent_router=fake_intent_router if use_intent_router else None,
+    )
+
+    result = await support_graph.ainvoke(
+        SupportState(
+            user_id=TEST_USER_ID,
+            user_message="查询订单 order-chat-20260922-002 的物流进度",
+        )
+    )
+
+    assert result["response"] == "已收到订单编号。"
+    assert chat_model.received_tools == [[fake_lookup_order]]
+
+
+async def test_order_intent_without_identifier_still_asks_with_intent_router() -> None:
+    chat_model = FakeChatModel(response="不应调用模型。")
+
+    async def fake_intent_router(
+        message: str,
+        pending_intent: Literal["order"] | None,
+    ) -> Literal["order"]:
+        assert message == "查询订单物流进度"
+        assert pending_intent is None
+        return "order"
+
+    support_graph = build_support_graph(
+        chat_model.generate_reply,
+        intent_router=fake_intent_router,
+    )
+    result = await support_graph.ainvoke(
+        SupportState(user_id=TEST_USER_ID, user_message="查询订单物流进度")
+    )
+
+    assert result["response"] == "我可以帮你查询订单，请提供订单编号。"
     assert chat_model.received_messages == []
 
 
@@ -412,7 +470,6 @@ async def test_order_graph_executes_tool_and_returns_to_model() -> None:
     initial_state = SupportState(
         user_id=TEST_USER_ID,
         user_message="订单编号是 order-demo-001",
-        pending_intent="order",
         request_id="order-request-1",
     )
     result = await support_graph.ainvoke(initial_state, config=config)

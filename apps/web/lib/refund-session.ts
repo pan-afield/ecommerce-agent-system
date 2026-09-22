@@ -11,9 +11,13 @@ export interface RefundRequestDraft {
   requestId: string;
 }
 
-export function loadRefundSession(storage: Storage): RefundApplication | null {
+function scopedKey(key: string, scope?: string) {
+  return scope ? `${key}:${encodeURIComponent(scope)}` : key;
+}
+
+export function loadRefundSession(storage: Storage, scope?: string): RefundApplication | null {
   try {
-    const rawValue = storage.getItem(REFUND_SESSION_STORAGE_KEY);
+    const rawValue = storage.getItem(scopedKey(REFUND_SESSION_STORAGE_KEY, scope));
     if (rawValue === null) {
       return null;
     }
@@ -24,25 +28,25 @@ export function loadRefundSession(storage: Storage): RefundApplication | null {
   }
 }
 
-export function saveRefundSession(storage: Storage, application: RefundApplication) {
+export function saveRefundSession(storage: Storage, application: RefundApplication, scope?: string) {
   try {
-    storage.setItem(REFUND_SESSION_STORAGE_KEY, JSON.stringify(application));
+    storage.setItem(scopedKey(REFUND_SESSION_STORAGE_KEY, scope), JSON.stringify(application));
   } catch {
     // Refund actions still work when session storage is blocked.
   }
 }
 
-export function clearRefundSession(storage: Storage) {
+export function clearRefundSession(storage: Storage, scope?: string) {
   try {
-    storage.removeItem(REFUND_SESSION_STORAGE_KEY);
+    storage.removeItem(scopedKey(REFUND_SESSION_STORAGE_KEY, scope));
   } catch {
     // A blocked storage API must not block a new in-memory refund flow.
   }
 }
 
-export function loadRefundRequest(storage: Storage): RefundRequestDraft | null {
+export function loadRefundRequest(storage: Storage, scope?: string): RefundRequestDraft | null {
   try {
-    const rawValue = storage.getItem(REFUND_REQUEST_STORAGE_KEY);
+    const rawValue = storage.getItem(scopedKey(REFUND_REQUEST_STORAGE_KEY, scope));
     if (rawValue === null) {
       return null;
     }
@@ -67,17 +71,17 @@ export function loadRefundRequest(storage: Storage): RefundRequestDraft | null {
   }
 }
 
-export function saveRefundRequest(storage: Storage, request: RefundRequestDraft) {
+export function saveRefundRequest(storage: Storage, request: RefundRequestDraft, scope?: string) {
   try {
-    storage.setItem(REFUND_REQUEST_STORAGE_KEY, JSON.stringify(request));
+    storage.setItem(scopedKey(REFUND_REQUEST_STORAGE_KEY, scope), JSON.stringify(request));
   } catch {
     // Idempotency remains available in memory when session storage is blocked.
   }
 }
 
-export function clearRefundRequest(storage: Storage) {
+export function clearRefundRequest(storage: Storage, scope?: string) {
   try {
-    storage.removeItem(REFUND_REQUEST_STORAGE_KEY);
+    storage.removeItem(scopedKey(REFUND_REQUEST_STORAGE_KEY, scope));
   } catch {
     // A blocked storage API must not block a completed refund flow.
   }

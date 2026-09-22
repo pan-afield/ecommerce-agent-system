@@ -29,6 +29,7 @@ import {
   type BusinessTool,
 } from "@/components/business-tools-panel";
 import { OrderDetailCard } from "@/components/order-detail-card";
+import { RefundFlow } from "@/components/refund-flow";
 import { KnowledgeEvidence } from "@/components/knowledge-evidence";
 import { ChatApiError, streamChatMessage } from "@/lib/chat-api";
 import type { AuthUser } from "@/lib/auth-client";
@@ -145,6 +146,12 @@ function ChatMessageItem({
               compact
               order={message.order}
               reduceMotion={reduceMotion}
+            />
+            <RefundFlow
+              approvalDemoEnabled={false}
+              order={message.order}
+              reduceMotion={reduceMotion}
+              sessionScope={`chat-message:${message.id}`}
             />
           </div>
         )}

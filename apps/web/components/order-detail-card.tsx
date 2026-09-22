@@ -16,7 +16,7 @@ const orderStatusLabels: Record<string, string> = {
   cancelled: "已取消",
   delivered: "已送达",
   paid: "已支付",
-  pending: "待处理",
+  pending: "待付款",
   processing: "处理中",
   shipped: "已发货",
 };

@@ -10,6 +10,7 @@
     "db:format": "prisma format",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
+    "db:seed:chat": "node prisma/seed-chat-orders.mjs",
     "db:studio": "prisma studio"
   },
   "dependencies": {

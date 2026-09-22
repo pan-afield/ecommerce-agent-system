@@ -122,6 +122,17 @@ describe("OrderLookup", () => {
     ).toBeTruthy();
   });
 
+  it("labels pending orders as awaiting payment", async () => {
+    const user = userEvent.setup();
+    getOrderMock.mockResolvedValue({ ...orderFixture, status: "pending" });
+    render(<OrderLookup />);
+
+    await user.click(screen.getByRole("button", { name: "查询订单" }));
+
+    expect(await screen.findByText("待付款")).toBeInTheDocument();
+    expect(screen.queryByText("待处理")).not.toBeInTheDocument();
+  });
+
   it.each([
     ["order_not_found", "订单不存在。", 404],
     ["order_service_unavailable", "订单服务暂时不可用，请稍后重试。", 503],
